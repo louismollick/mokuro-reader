@@ -1,0 +1,175 @@
+import type { DictionaryPreference } from './preferences';
+
+export interface YomitanDictionarySummary {
+  title: string;
+  revision: string;
+  importDate: number;
+  version: number;
+}
+
+export interface YomitanToken {
+  text: string;
+  reading: string;
+  term: string;
+}
+
+type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
+
+const YOMITAN_CORE_INDEX = '../../../../yomitan-core/dist/index.js';
+const YOMITAN_CORE_RENDER = '../../../../yomitan-core/dist/render.js';
+
+let coreInstance: any | null = null;
+
+async function getCoreInstance() {
+  if (coreInstance) return coreInstance;
+
+  const module = await import(/* @vite-ignore */ YOMITAN_CORE_INDEX);
+  const YomitanCore = module.default;
+  const core = new YomitanCore({
+    databaseName: 'mokuro-reader-yomitan',
+    initLanguage: true
+  });
+  await core.initialize();
+  coreInstance = core;
+  return coreInstance;
+}
+
+function toFindTermDictionaryMap(enabledDictionaryMap: SimpleEnabledDictionaryMap) {
+  const map = new Map<
+    string,
+    {
+      index: number;
+      alias: string;
+      allowSecondarySearches: boolean;
+      partsOfSpeechFilter: boolean;
+      useDeinflections: boolean;
+    }
+  >();
+
+  for (const [name, { index }] of enabledDictionaryMap.entries()) {
+    map.set(name, {
+      index,
+      alias: name,
+      allowSecondarySearches: false,
+      partsOfSpeechFilter: true,
+      useDeinflections: true
+    });
+  }
+
+  return map;
+}
+
+function normalizeSourceText(lines: string[]) {
+  return lines
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function buildEnabledDictionaryMap(preferences: DictionaryPreference[]) {
+  const enabled = preferences.filter((item) => item.enabled);
+  const map: SimpleEnabledDictionaryMap = new Map();
+
+  enabled.forEach((item, index) => {
+    map.set(item.title, {
+      index,
+      priority: 0
+    });
+  });
+
+  return map;
+}
+
+export async function getInstalledDictionaries(): Promise<YomitanDictionarySummary[]> {
+  const core = await getCoreInstance();
+  const dictionaries = (await core.getDictionaryInfo()) as YomitanDictionarySummary[];
+  return [...dictionaries].sort((a, b) => b.importDate - a.importDate);
+}
+
+export async function importDictionaryZip(
+  archive: ArrayBuffer,
+  onProgress?: (progress: { index: number; count: number; nextStep?: boolean }) => void
+) {
+  const core = await getCoreInstance();
+  return await core.importDictionary(archive, {
+    onProgress
+  });
+}
+
+export async function deleteDictionary(title: string) {
+  const core = await getCoreInstance();
+  await core.deleteDictionary(title);
+}
+
+export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
+  const core = await getCoreInstance();
+  const parsed = (await core.parseText(text, {
+    language: 'ja',
+    enabledDictionaryMap
+  })) as Array<{ segments?: Array<{ text?: string; reading?: string; term?: string }> }>;
+
+  const tokens: YomitanToken[] = [];
+  for (const line of parsed) {
+    const segments = line.segments || [];
+    for (const segment of segments) {
+      if (!segment.text) continue;
+      const tokenText = segment.text.trim();
+      if (!tokenText) continue;
+
+      tokens.push({
+        text: tokenText,
+        reading: segment.reading || '',
+        term: segment.term || tokenText
+      });
+    }
+  }
+
+  return tokens;
+}
+
+export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
+  const core = await getCoreInstance();
+  const result = (await core.findTerms(text, {
+    mode: 'group',
+    language: 'ja',
+    enabledDictionaryMap: toFindTermDictionaryMap(enabledDictionaryMap),
+    options: {
+      matchType: 'exact',
+      deinflect: true,
+      removeNonJapaneseCharacters: false,
+      searchResolution: 'letter'
+    }
+  })) as { entries: unknown[]; originalTextLength: number };
+
+  return result;
+}
+
+export async function renderTermEntriesHtml(entries: unknown[]) {
+  const core = await getCoreInstance();
+  const dictionaryInfo = await core.getDictionaryInfo();
+
+  const renderModule = await import(/* @vite-ignore */ YOMITAN_CORE_RENDER);
+  const { DisplayGenerator, DISPLAY_TEMPLATES, DISPLAY_CSS, NoOpContentManager } = renderModule as {
+    DisplayGenerator: new (doc: Document, contentManager: unknown, templateHtml: string) => any;
+    DISPLAY_TEMPLATES: string;
+    DISPLAY_CSS: string;
+    NoOpContentManager: new () => unknown;
+  };
+
+  const generator = new DisplayGenerator(document, new NoOpContentManager(), DISPLAY_TEMPLATES);
+  const container = document.createElement('div');
+  container.className = 'yomitan-results';
+
+  for (const entry of entries) {
+    const node = generator.createTermEntry(entry, dictionaryInfo);
+    container.appendChild(node);
+  }
+
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${DISPLAY_CSS}</style></head><body>${container.innerHTML}</body></html>`;
+}
+
+export function joinTextBoxLines(lines: string[]) {
+  return normalizeSourceText(lines);
+}

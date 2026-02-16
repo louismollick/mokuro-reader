@@ -29,6 +29,7 @@
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
+  import YomitanDrawer from './YomitanDrawer.svelte';
   import { showCropper, type VolumeMetadata } from '$lib/anki-connect';
   import {
     BackwardStepSolid,
@@ -46,6 +47,7 @@
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
+  import { joinTextBoxLines } from '$lib/yomitan/core';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -767,10 +769,22 @@
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
+  let showYomitanDrawer = $state(false);
+  let yomitanSourceText = $state('');
 
   function handleTextBoxContextMenu(data: ContextMenuData) {
     contextMenuData = data;
     showContextMenu = true;
+  }
+
+  function handleTextBoxActivate(data: { lines: string[]; text: string; blockIndex: number }) {
+    if (!$settings.yomitanPopupOnTextBoxTap) return;
+
+    const sourceText = data.text?.trim() || joinTextBoxLines(data.lines);
+    if (!sourceText) return;
+
+    yomitanSourceText = sourceText;
+    showYomitanDrawer = true;
   }
 
   function handleContextMenuAddToAnki(selection: string) {
@@ -1033,6 +1047,7 @@
                   volumeUuid={volume.volume_uuid}
                   forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
+                  onTextBoxActivate={handleTextBoxActivate}
                 />
               {/if}
               <MangaPage
@@ -1042,6 +1057,7 @@
                 volumeUuid={volume.volume_uuid}
                 forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                 onContextMenu={handleTextBoxContextMenu}
+                onTextBoxActivate={handleTextBoxActivate}
               />
             {:else}
               <div class="flex h-screen w-screen items-center justify-center">
@@ -1067,6 +1083,14 @@
       onClose={() => (showContextMenu = false)}
     />
   {/if}
+
+  <YomitanDrawer
+    bind:open={showYomitanDrawer}
+    sourceText={yomitanSourceText}
+    onClose={() => {
+      showYomitanDrawer = false;
+    }}
+  />
 
   {#if !$settings.mobile}
     <button

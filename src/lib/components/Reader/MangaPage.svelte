@@ -19,9 +19,12 @@
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
+    /** Callback when a text box is tapped/clicked */
+    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
-  let { page, src, cachedUrl, volumeUuid, forceVisible = false, onContextMenu }: Props = $props();
+  let { page, src, cachedUrl, volumeUuid, forceVisible = false, onContextMenu, onTextBoxActivate }:
+    Props = $props();
 
   let url = $state('');
 
@@ -60,5 +63,5 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes {page} {src} {volumeUuid} {forceVisible} {onContextMenu} />
+  <TextBoxes {page} {src} {volumeUuid} {forceVisible} {onContextMenu} {onTextBoxActivate} />
 </div>

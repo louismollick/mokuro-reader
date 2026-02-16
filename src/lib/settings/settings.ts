@@ -70,6 +70,7 @@ export type CatalogSettings = {
 
 export type Settings = {
   defaultFullscreen: boolean;
+  yomitanPopupOnTextBoxTap: boolean;
   textEditable: boolean;
   textBoxBorders: boolean;
   displayOCR: boolean;
@@ -114,6 +115,7 @@ export type ScheduleSettingKey = 'nightModeSchedule' | 'invertColorsSchedule';
 
 const defaultSettings: Settings = {
   defaultFullscreen: false,
+  yomitanPopupOnTextBoxTap: false,
   displayOCR: true,
   textEditable: false,
   textBoxBorders: false,

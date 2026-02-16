@@ -20,9 +20,12 @@
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
+    /** Callback when a text box is tapped/clicked */
+    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
-  let { page, src, volumeUuid, forceVisible = false, onContextMenu }: Props = $props();
+  let { page, src, volumeUuid, forceVisible = false, onContextMenu, onTextBoxActivate }: Props =
+    $props();
 
   interface TextBoxData {
     left: string;
@@ -369,6 +372,19 @@
     event.clipboardData?.setData('text/plain', stripped);
     event.preventDefault();
   }
+
+  function handleTextBoxClick(event: MouseEvent, lines: string[], blockIndex: number) {
+    if ((event.target as HTMLElement)?.closest('[contenteditable="true"]')) return;
+
+    const text = lines.join(' ').replace(/\s+/g, ' ').trim();
+    if (!text) return;
+
+    onTextBoxActivate?.({
+      lines,
+      text,
+      blockIndex
+    });
+  }
 </script>
 
 {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
@@ -391,6 +407,7 @@
     role="none"
     oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex)}
     ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
+    onclick={(e) => handleTextBoxClick(e, lines, blockIndex)}
     oncopy={onCopy}
     {contenteditable}
   >

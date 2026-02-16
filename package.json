@@ -72,7 +72,8 @@
     "panzoom": "^9.4.3",
     "pica": "^9.0.1",
     "svelte-easy-crop": "^5.0.0",
-    "webdav": "^5.8.0"
+    "webdav": "^5.8.0",
+    "yomitan-core": "^0.1.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
