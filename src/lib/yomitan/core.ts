@@ -17,14 +17,12 @@ type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number 
 
 const YOMITAN_CORE_INDEX_CANDIDATES = [
   '/@fs/Users/mollicl/yomitan-core/dist/index.js',
-  '/@fs/Users/mollicl/yomitan-core/src/index.ts',
-  'yomitan-core'
+  '/@fs/Users/mollicl/yomitan-core/src/index.ts'
 ];
 
 const YOMITAN_CORE_RENDER_CANDIDATES = [
   '/@fs/Users/mollicl/yomitan-core/dist/render.js',
-  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts',
-  'yomitan-core/render'
+  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts'
 ];
 
 let coreInstance: any | null = null;
@@ -43,10 +41,36 @@ async function tryImport(specifiers: string[]) {
   throw lastError ?? new Error(`Failed to import module candidates: ${specifiers.join(', ')}`);
 }
 
+async function importCoreIndexModule() {
+  if (import.meta.env.DEV) {
+    try {
+      return await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
+    } catch {
+      // Fall back to package import below.
+    }
+  }
+
+  // Use a literal specifier so Vite can resolve and bundle it for production.
+  return await import('yomitan-core');
+}
+
+async function importCoreRenderModule() {
+  if (import.meta.env.DEV) {
+    try {
+      return await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
+    } catch {
+      // Fall back to package import below.
+    }
+  }
+
+  // Use a literal specifier so Vite can resolve and bundle it for production.
+  return await import('yomitan-core/render');
+}
+
 async function getCoreInstance() {
   if (coreInstance) return coreInstance;
 
-  const module = await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
+  const module = await importCoreIndexModule();
   const YomitanCore = module.default;
   const core = new YomitanCore({
     databaseName: 'mokuro-reader-yomitan',
@@ -179,7 +203,7 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
   const core = await getCoreInstance();
   const dictionaryInfo = await core.getDictionaryInfo();
 
-  const renderModule = await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
+  const renderModule = await importCoreRenderModule();
   const { DisplayGenerator, DISPLAY_TEMPLATES, DISPLAY_CSS, NoOpContentManager } = renderModule as {
     DisplayGenerator: new (doc: Document, contentManager: unknown, templateHtml: string) => any;
     DISPLAY_TEMPLATES: string;

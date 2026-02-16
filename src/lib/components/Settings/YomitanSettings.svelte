@@ -18,13 +18,11 @@
     saveDictionaryPreferences,
     type DictionaryPreference
   } from '$lib/yomitan/preferences';
-
-  const RECOMMENDED_DICTIONARIES = [
-    'https://github.com/stephenmk/stephenmk.github.io/releases/latest/download/jitendex-yomitan.zip',
-    'https://github.com/yomidevs/jmdict-yomitan/releases/latest/download/KANJIDIC_english.zip',
-    'https://github.com/Kuuuube/yomitan-dictionaries/raw/main/dictionaries/JPDB_v2.2_Frequency_Kana_2024-10-13.zip',
-    'https://github.com/MarvNC/yomichan-dictionaries/raw/master/dl/%5BKanji%5D%20JPDB%20Kanji.zip'
-  ];
+  import {
+    ALLOWED_RECOMMENDED_DICTIONARY_URLS,
+    buildRecommendedDictionaryProxyUrl,
+    RECOMMENDED_DICTIONARIES
+  } from '$lib/yomitan/recommended-dictionaries';
 
   let installed = $state<YomitanDictionarySummary[]>([]);
   let preferences = $state<DictionaryPreference[]>([]);
@@ -192,11 +190,15 @@
         const label = url.split('/').pop() || `Dictionary ${i + 1}`;
 
         try {
+          if (!ALLOWED_RECOMMENDED_DICTIONARY_URLS.has(url)) {
+            throw new Error(`Blocked unapproved recommended dictionary URL: ${url}`);
+          }
+
           progressTrackerStore.updateProcess(processId, {
             status: `Downloading ${label} (${i + 1}/${RECOMMENDED_DICTIONARIES.length})`
           });
 
-          const response = await fetchWithRetry(url, 3);
+          const response = await fetchWithRetry(buildRecommendedDictionaryProxyUrl(url), 3);
           const arrayBuffer = await response.arrayBuffer();
 
           await importDictionaryBuffer(

@@ -50,6 +50,28 @@ self.addEventListener('fetch', (event) => {
 
   async function respond() {
     const url = new URL(event.request.url);
+    const isSameOrigin = url.origin === self.location.origin;
+
+    // Don't apply offline fallback/caching strategy to cross-origin requests.
+    // This avoids rewriting external fetch errors (e.g. GitHub dictionary downloads)
+    // into synthetic 503 Offline responses.
+    if (!isSameOrigin) {
+      try {
+        return await fetch(event.request);
+      } catch {
+        return new Response('Network error', { status: 502, statusText: 'Bad Gateway' });
+      }
+    }
+
+    // API endpoints should be network-only to avoid caching large binary responses.
+    if (url.pathname.startsWith('/api/')) {
+      try {
+        return await fetch(event.request);
+      } catch {
+        return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
+      }
+    }
+
     const cache = await caches.open(CACHE);
 
     // `build`/`files` can always be served from the cache
@@ -70,11 +92,7 @@ self.addEventListener('fetch', (event) => {
       // 1. Response is successful (status 200)
       // 2. It's not a Google Drive API request
       // 3. It's not a large file (>10MB)
-      if (
-        response.status === 200 &&
-        !event.request.url.includes('googleapis.com/drive') &&
-        !event.request.url.includes('alt=media')
-      ) {
+      if (response.status === 200) {
         // Check response size before caching
         const contentLength = response.headers.get('content-length');
         const sizeInMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;
