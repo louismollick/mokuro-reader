@@ -392,7 +392,11 @@
   function handleWheelEvent(e: WheelEvent) {
     const target = e.target as HTMLElement;
     // Don't capture wheel events from settings drawer or popovers
-    if (target.closest('#settings') || target.closest('[data-popover]')) {
+    if (
+      target.closest('#settings') ||
+      target.closest('[data-popover]') ||
+      target.closest('[data-yomitan-drawer]')
+    ) {
       return;
     }
     panzoomHandleWheel(e);

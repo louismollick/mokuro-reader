@@ -31,6 +31,8 @@
   let lookupLoading = $state(false);
   let errorMessage = $state('');
   let noEntries = $state(false);
+  let lookupFrame: HTMLIFrameElement | null = $state(null);
+  let lookupFrameHeight = $state(0);
 
   function closeDrawer() {
     open = false;
@@ -46,6 +48,19 @@
     noEntries = false;
     loading = false;
     lookupLoading = false;
+    lookupFrameHeight = 0;
+  }
+
+  function handleIframeMessage(event: MessageEvent) {
+    if (!lookupFrame || event.source !== lookupFrame.contentWindow) return;
+
+    const data = event.data as { type?: string; height?: unknown } | null;
+    if (!data || data.type !== 'yomitan-iframe-height') return;
+
+    const nextHeight = typeof data.height === 'number' ? Math.ceil(data.height) : 0;
+    if (nextHeight > 0) {
+      lookupFrameHeight = nextHeight;
+    }
   }
 
   async function loadAndTokenizeText() {
@@ -129,6 +144,7 @@
 </script>
 
 <svelte:window
+  onmessage={handleIframeMessage}
   onkeydown={(event) => {
     if (open && event.key === 'Escape') {
       closeDrawer();
@@ -137,7 +153,7 @@
 />
 
 {#if open}
-  <div class="fixed inset-0 z-[12000] bg-gray-950/95 text-white">
+  <div data-yomitan-drawer class="fixed inset-0 z-[12000] bg-gray-950/95 text-white">
     <div class="flex h-full flex-col">
       <div class="flex items-center justify-between border-b border-gray-700 px-4 py-3">
         <div>
@@ -187,11 +203,16 @@
               No dictionary entries found for this token.
             </div>
           {:else if lookupHtml}
-            <iframe
-              title="Yomitan dictionary results"
-              class="h-full w-full border-0"
-              srcdoc={lookupHtml}
-            ></iframe>
+            <div class="h-full overflow-y-auto overflow-x-hidden">
+              <iframe
+                bind:this={lookupFrame}
+                title="Yomitan dictionary results"
+                class="block w-full border-0"
+                scrolling="yes"
+                style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y;`}
+                srcdoc={lookupHtml}
+              ></iframe>
+            </div>
           {:else}
             <div class="flex h-full items-center justify-center text-sm text-gray-600">
               Select a token to view dictionary results.

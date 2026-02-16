@@ -220,7 +220,46 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
     container.appendChild(node);
   }
 
-  return `<!doctype html><html><head><meta charset="utf-8"><style>${DISPLAY_CSS}</style></head><body>${container.innerHTML}</body></html>`;
+  const scrollOverrideCss = `
+html, body {
+  height: 100%;
+}
+body {
+  margin: 0;
+  overflow: hidden !important;
+}
+#yomitan-scroll-root {
+  height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+`;
+
+  const heightScript = `
+(() => {
+  const sendHeight = () => {
+    const height = Math.max(
+      document.documentElement?.scrollHeight ?? 0,
+      document.body?.scrollHeight ?? 0
+    );
+    window.parent?.postMessage({ type: 'yomitan-iframe-height', height }, '*');
+  };
+
+  window.addEventListener('load', sendHeight);
+  window.addEventListener('resize', sendHeight);
+  setTimeout(sendHeight, 0);
+  setTimeout(sendHeight, 50);
+  setTimeout(sendHeight, 250);
+
+  if (typeof ResizeObserver !== 'undefined' && document.body) {
+    const observer = new ResizeObserver(sendHeight);
+    observer.observe(document.body);
+  }
+})();
+`;
+
+  return `<!doctype html><html data-frequency-display-mode="split-tags"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${DISPLAY_CSS}</style><style>${scrollOverrideCss}</style></head><body><div id="yomitan-scroll-root">${container.innerHTML}</div><script>${heightScript}<\/script></body></html>`;
 }
 
 export function joinTextBoxLines(lines: string[]) {
