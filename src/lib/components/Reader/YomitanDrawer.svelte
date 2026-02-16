@@ -128,15 +128,15 @@
   });
 </script>
 
-{#if open}
-  <svelte:window
-    onkeydown={(event) => {
-      if (event.key === 'Escape') {
-        closeDrawer();
-      }
-    }}
-  />
+<svelte:window
+  onkeydown={(event) => {
+    if (open && event.key === 'Escape') {
+      closeDrawer();
+    }
+  }}
+/>
 
+{#if open}
   <div class="fixed inset-0 z-[12000] bg-gray-950/95 text-white">
     <div class="flex h-full flex-col">
       <div class="flex items-center justify-between border-b border-gray-700 px-4 py-3">
@@ -153,8 +153,10 @@
         </button>
       </div>
 
-      <div class="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[360px_1fr]">
-        <section class="min-h-0 overflow-y-auto border-r border-gray-800 p-4">
+      <div class="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[360px_1fr]">
+        <section
+          class="max-h-48 overflow-y-auto border-b border-gray-800 p-4 md:max-h-none md:border-r md:border-b-0"
+        >
           {#if loading}
             <p class="text-sm text-gray-300">Loading Yomitan...</p>
           {:else if errorMessage}
@@ -175,7 +177,7 @@
           {/if}
         </section>
 
-        <section class="min-h-0 bg-white">
+        <section class="min-h-0 flex-1 overflow-hidden bg-white">
           {#if lookupLoading}
             <div class="flex h-full items-center justify-center text-sm text-gray-600">
               Looking up token...
@@ -185,7 +187,10 @@
               No dictionary entries found for this token.
             </div>
           {:else if lookupHtml}
-            <iframe title="Yomitan dictionary results" class="h-full w-full border-0" srcdoc={lookupHtml}
+            <iframe
+              title="Yomitan dictionary results"
+              class="h-full w-full border-0"
+              srcdoc={lookupHtml}
             ></iframe>
           {:else}
             <div class="flex h-full items-center justify-center text-sm text-gray-600">
@@ -197,4 +202,3 @@
     </div>
   </div>
 {/if}
-

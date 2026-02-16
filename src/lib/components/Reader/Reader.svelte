@@ -780,7 +780,8 @@
   function handleTextBoxActivate(data: { lines: string[]; text: string; blockIndex: number }) {
     if (!$settings.yomitanPopupOnTextBoxTap) return;
 
-    const sourceText = data.text?.trim() || joinTextBoxLines(data.lines);
+    // Always normalize from raw OCR lines to avoid stale/space-injected payloads.
+    const sourceText = joinTextBoxLines(data.lines);
     if (!sourceText) return;
 
     yomitanSourceText = sourceText;

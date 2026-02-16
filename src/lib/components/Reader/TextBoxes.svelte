@@ -376,7 +376,11 @@
   function handleTextBoxClick(event: MouseEvent, lines: string[], blockIndex: number) {
     if ((event.target as HTMLElement)?.closest('[contenteditable="true"]')) return;
 
-    const text = lines.join(' ').replace(/\s+/g, ' ').trim();
+    // Do not inject spaces between OCR lines; that changes tokenizer behavior.
+    const text = lines
+      .join('')
+      .replace(/[\r\n\t]/g, '')
+      .trim();
     if (!text) return;
 
     onTextBoxActivate?.({

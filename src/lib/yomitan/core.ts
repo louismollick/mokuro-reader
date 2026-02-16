@@ -15,15 +15,38 @@ export interface YomitanToken {
 
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
 
-const YOMITAN_CORE_INDEX = '../../../../yomitan-core/dist/index.js';
-const YOMITAN_CORE_RENDER = '../../../../yomitan-core/dist/render.js';
+const YOMITAN_CORE_INDEX_CANDIDATES = [
+  '/@fs/Users/mollicl/yomitan-core/dist/index.js',
+  '/@fs/Users/mollicl/yomitan-core/src/index.ts',
+  'yomitan-core'
+];
+
+const YOMITAN_CORE_RENDER_CANDIDATES = [
+  '/@fs/Users/mollicl/yomitan-core/dist/render.js',
+  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts',
+  'yomitan-core/render'
+];
 
 let coreInstance: any | null = null;
+
+async function tryImport(specifiers: string[]) {
+  let lastError: unknown = null;
+
+  for (const specifier of specifiers) {
+    try {
+      return await import(/* @vite-ignore */ specifier);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error(`Failed to import module candidates: ${specifiers.join(', ')}`);
+}
 
 async function getCoreInstance() {
   if (coreInstance) return coreInstance;
 
-  const module = await import(/* @vite-ignore */ YOMITAN_CORE_INDEX);
+  const module = await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
   const YomitanCore = module.default;
   const core = new YomitanCore({
     databaseName: 'mokuro-reader-yomitan',
@@ -63,8 +86,8 @@ function normalizeSourceText(lines: string[]) {
   return lines
     .map((line) => line.trim())
     .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
+    .join('')
+    .replace(/\s+/g, '')
     .trim();
 }
 
@@ -105,9 +128,16 @@ export async function deleteDictionary(title: string) {
 
 export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
   const core = await getCoreInstance();
+  const parserDictionaryMap = toFindTermDictionaryMap(enabledDictionaryMap);
+
   const parsed = (await core.parseText(text, {
     language: 'ja',
-    enabledDictionaryMap
+    enabledDictionaryMap: parserDictionaryMap,
+    scanLength: 10,
+    searchResolution: 'letter',
+    removeNonJapaneseCharacters: false,
+    deinflect: true,
+    textReplacements: [null]
   })) as Array<{ segments?: Array<{ text?: string; reading?: string; term?: string }> }>;
 
   const tokens: YomitanToken[] = [];
@@ -125,7 +155,6 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
       });
     }
   }
-
   return tokens;
 }
 
@@ -150,7 +179,7 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
   const core = await getCoreInstance();
   const dictionaryInfo = await core.getDictionaryInfo();
 
-  const renderModule = await import(/* @vite-ignore */ YOMITAN_CORE_RENDER);
+  const renderModule = await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
   const { DisplayGenerator, DISPLAY_TEMPLATES, DISPLAY_CSS, NoOpContentManager } = renderModule as {
     DisplayGenerator: new (doc: Document, contentManager: unknown, templateHtml: string) => any;
     DISPLAY_TEMPLATES: string;

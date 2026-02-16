@@ -31,6 +31,37 @@
   let isRefreshing = $state(false);
   let isInstallingRecommended = $state(false);
 
+  async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const response = await fetch(url, {
+          cache: 'no-store',
+          redirect: 'follow'
+        });
+        if (response.ok) {
+          return response;
+        }
+
+        if (response.status >= 500 && attempt < attempts) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+          continue;
+        }
+
+        throw new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        lastError = error;
+        if (attempt < attempts) {
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+          continue;
+        }
+      }
+    }
+
+    throw lastError ?? new Error('Failed to fetch dictionary URL');
+  }
+
   async function refreshDictionaries() {
     isRefreshing = true;
     try {
@@ -165,10 +196,7 @@
             status: `Downloading ${label} (${i + 1}/${RECOMMENDED_DICTIONARIES.length})`
           });
 
-          const response = await fetch(url);
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
+          const response = await fetchWithRetry(url, 3);
           const arrayBuffer = await response.arrayBuffer();
 
           await importDictionaryBuffer(
@@ -280,4 +308,3 @@
     </div>
   </div>
 </AccordionItem>
-
