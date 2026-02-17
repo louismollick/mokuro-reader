@@ -1033,6 +1033,7 @@
         style:filter={`invert(${$invertColorsActive ? 1 : 0})`}
         ondblclick={onDoubleTap}
         onclick={handleOverlayToggle}
+        ondragstart={(event) => event.preventDefault()}
         role="none"
         id="manga-panel"
       >

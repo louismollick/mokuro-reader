@@ -36,7 +36,7 @@
 
   let dictionaries = $state<YomitanDictionarySummary[]>([]);
   let tokens = $state<YomitanToken[]>([]);
-  let selectedToken = $state<YomitanToken | null>(null);
+  let selectedTokenIndex = $state<number | null>(null);
   let lookupHtml = $state('');
   let loading = $state(false);
   let lookupLoading = $state(false);
@@ -45,6 +45,7 @@
   let selectionMessage = $state('');
   let lookupFrame: HTMLIFrameElement | null = $state(null);
   let lookupFrameHeight = $state(0);
+  let awaitingLookupFrameLoad = $state(false);
   let prefersReducedMotion = $state(false);
 
   let swiping = $state(false);
@@ -71,13 +72,14 @@
   function resetDrawerState() {
     dictionaries = [];
     tokens = [];
-    selectedToken = null;
+    selectedTokenIndex = null;
     lookupHtml = '';
     errorMessage = '';
     noEntries = false;
     selectionMessage = '';
     loading = false;
     lookupLoading = false;
+    awaitingLookupFrameLoad = false;
     lookupFrameHeight = 0;
     resetSwipe();
   }
@@ -93,6 +95,7 @@
   function handleSheetPointerDown(event: PointerEvent) {
     if (!allowSwipeClose) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
     swipePointerId = event.pointerId;
     swipeStartY = event.clientY;
     swipeStartTime = performance.now();
@@ -173,9 +176,9 @@
         return;
       }
 
-      const firstSelectableToken = tokens.find((token) => token.selectable);
-      if (firstSelectableToken) {
-        await handleTokenClick(firstSelectableToken);
+      const firstSelectableTokenIndex = tokens.findIndex((token) => token.selectable);
+      if (firstSelectableTokenIndex >= 0) {
+        await handleTokenClick(tokens[firstSelectableTokenIndex], firstSelectableTokenIndex);
       } else {
         selectionMessage = 'No selectable words found for this text.';
       }
@@ -187,10 +190,14 @@
     }
   }
 
-  async function handleTokenClick(token: YomitanToken) {
+  async function handleTokenClick(token: YomitanToken, index: number) {
     if (!token.selectable) return;
-    selectedToken = token;
+    if (selectedTokenIndex === index && (lookupHtml || noEntries || lookupLoading)) {
+      return;
+    }
+    selectedTokenIndex = index;
     lookupLoading = true;
+    awaitingLookupFrameLoad = false;
     noEntries = false;
     selectionMessage = '';
 
@@ -208,13 +215,22 @@
       }
 
       lookupHtml = await renderTermEntriesHtml(lookup.entries);
+      awaitingLookupFrameLoad = true;
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
       showSnackbar('Failed to look up token in Yomitan.');
       noEntries = true;
     } finally {
-      lookupLoading = false;
+      if (!awaitingLookupFrameLoad) {
+        lookupLoading = false;
+      }
     }
+  }
+
+  function handleLookupFrameLoad() {
+    if (!awaitingLookupFrameLoad) return;
+    awaitingLookupFrameLoad = false;
+    lookupLoading = false;
   }
 
   $effect(() => {
@@ -245,6 +261,11 @@
 
 <svelte:window
   onmessage={handleIframeMessage}
+  ondragstart={(event) => {
+    if (open) {
+      event.preventDefault();
+    }
+  }}
   onkeydown={(event) => {
     if (open && event.key === 'Escape') {
       closeDrawer();
@@ -290,41 +311,43 @@
         </div>
       </div>
 
-      <div class="min-h-0 flex flex-1 flex-col">
-        <section class="max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4">
-          {#if loading}
-            <p class="text-[1.05rem] leading-8 text-gray-200">{sourceText}</p>
-          {:else if errorMessage}
-            <p class="text-sm text-red-300">{errorMessage}</p>
-          {:else}
-            <div class="flex flex-wrap items-end text-gray-100">
-              {#each tokens as token, index (`token-${index}-${token.text}`)}
-                {#if token.selectable}
-                  <button
-                    type="button"
-                    class={`inline rounded-sm px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 ${selectedToken === token ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
-                    onclick={() => handleTokenClick(token)}
-                  >
-                    {token.text}
-                  </button>
-                {:else}
-                  <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span>
-                {/if}
-              {/each}
-            </div>
-          {/if}
-        </section>
+      <div class="min-h-0 flex flex-1 flex-col bg-gray-900">
+        {#if !loading}
+          <section class="fade-in max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4">
+            {#if errorMessage}
+              <p class="text-sm text-red-300">{errorMessage}</p>
+            {:else}
+              <div class="flex flex-wrap items-end text-gray-100 select-text">
+                {#each tokens as token, index (`token-${index}-${token.text}`)}
+                  {#if token.selectable}
+                    <button
+                      type="button"
+                      class={`inline appearance-none rounded-sm border-0 bg-transparent px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 select-text ${selectedTokenIndex === index ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
+                      onclick={() => handleTokenClick(token, index)}
+                    >
+                      {token.text}
+                    </button>
+                  {:else}
+                    <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span>
+                  {/if}
+                {/each}
+              </div>
+            {/if}
+          </section>
+        {/if}
 
         <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
-          <div class="pointer-events-none absolute top-3 right-3 z-20">
-            <Button
-              outline
-              color="light"
-              class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
-              onclick={closeDrawer}
-              >Close</Button
-            >
-          </div>
+          {#if !loading}
+            <div class="fade-in pointer-events-none absolute top-3 right-3 z-20">
+              <Button
+                outline
+                color="light"
+                class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
+                onclick={closeDrawer}
+                >Close</Button
+              >
+            </div>
+          {/if}
 
           {#if selectionMessage}
             <div class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600">
@@ -335,23 +358,40 @@
               No dictionary entries found for this token.
             </div>
           {:else if lookupHtml}
-            <div class="h-full overflow-y-auto overflow-x-hidden">
+            <div class="fade-in h-full overflow-y-auto overflow-x-hidden">
               <iframe
                 bind:this={lookupFrame}
                 title="Yomitan dictionary results"
-                class="block w-full border-0"
+                class="block w-full border-0 bg-[#1e1e1e]"
                 scrolling="yes"
-                style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y;`}
+                style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y; background-color:#1e1e1e;`}
                 srcdoc={lookupHtml}
+                onload={handleLookupFrameLoad}
               ></iframe>
             </div>
           {/if}
 
           {#if lookupLoading}
-            <div class="absolute inset-0 bg-[#1e1e1e]/35 backdrop-blur-[1px]"></div>
+            <div class="absolute inset-0 bg-[#1e1e1e]"></div>
           {/if}
         </section>
       </div>
     </div>
   </div>
 {/if}
+
+<style>
+  .fade-in {
+    animation: yomitan-fade-in 240ms ease-out;
+  }
+
+  @keyframes yomitan-fade-in {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+</style>
