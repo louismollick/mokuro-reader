@@ -11,6 +11,8 @@ export interface YomitanToken {
   text: string;
   reading: string;
   term: string;
+  selectable: boolean;
+  kind?: 'word' | 'punct' | 'other';
 }
 
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
@@ -162,21 +164,29 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
     removeNonJapaneseCharacters: false,
     deinflect: true,
     textReplacements: [null]
-  })) as Array<{ segments?: Array<{ text?: string; reading?: string; term?: string }> }>;
+  })) as Array<{
+    content?: Array<Array<{ text?: string; reading?: string; headwords?: unknown[][] }>>;
+  }>;
 
   const tokens: YomitanToken[] = [];
-  for (const line of parsed) {
-    const segments = line.segments || [];
-    for (const segment of segments) {
-      if (!segment.text) continue;
-      const tokenText = segment.text.trim();
-      if (!tokenText) continue;
+  for (const parseResult of parsed) {
+    const lines = parseResult.content || [];
+    for (const line of lines) {
+      for (const segment of line) {
+        if (!segment.text) continue;
+        const tokenText = segment.text.trim();
+        if (!tokenText) continue;
 
-      tokens.push({
-        text: tokenText,
-        reading: segment.reading || '',
-        term: segment.term || tokenText
-      });
+        const selectable = Array.isArray(segment.headwords) && segment.headwords.length > 0;
+
+        tokens.push({
+          text: tokenText,
+          reading: segment.reading || '',
+          term: tokenText,
+          selectable,
+          kind: selectable ? 'word' : 'other'
+        });
+      }
     }
   }
   return tokens;
@@ -204,12 +214,30 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
   const dictionaryInfo = await core.getDictionaryInfo();
 
   const renderModule = await importCoreRenderModule();
-  const { DisplayGenerator, DISPLAY_TEMPLATES, DISPLAY_CSS, NoOpContentManager } = renderModule as {
+  const {
+    DisplayGenerator,
+    DISPLAY_TEMPLATES,
+    DISPLAY_CSS,
+    NoOpContentManager,
+    applyExtensionDisplayDefaults,
+    applyPopupTheme
+  } = renderModule as {
     DisplayGenerator: new (doc: Document, contentManager: unknown, templateHtml: string) => any;
     DISPLAY_TEMPLATES: string;
     DISPLAY_CSS: string;
     NoOpContentManager: new () => unknown;
+    applyExtensionDisplayDefaults: (target: HTMLElement) => void;
+    applyPopupTheme: (target: HTMLElement, options?: { theme?: 'light' | 'dark' | 'browser' | 'site' }) => void;
   };
+
+  const themeTarget = document.createElement('div');
+  applyExtensionDisplayDefaults(themeTarget);
+  applyPopupTheme(themeTarget, { theme: 'dark' });
+  themeTarget.dataset.pageType = 'popup';
+  themeTarget.dataset.theme = 'dark';
+  themeTarget.dataset.themeRaw = 'dark';
+  themeTarget.dataset.browserTheme = 'dark';
+  themeTarget.dataset.siteTheme = 'dark';
 
   const generator = new DisplayGenerator(document, new NoOpContentManager(), DISPLAY_TEMPLATES);
   const container = document.createElement('div');
@@ -220,9 +248,11 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
     container.appendChild(node);
   }
 
-  const scrollOverrideCss = `
+const scrollOverrideCss = `
 html, body {
   height: 100%;
+  background-color: #1e1e1e;
+  color: #d4d4d4;
 }
 body {
   margin: 0;
@@ -233,6 +263,7 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
+  background-color: #1e1e1e;
 }
 `;
 
@@ -259,7 +290,11 @@ body {
 })();
 `;
 
-  return `<!doctype html><html data-frequency-display-mode="split-tags"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${DISPLAY_CSS}</style><style>${scrollOverrideCss}</style></head><body><div id="yomitan-scroll-root">${container.innerHTML}</div><script>${heightScript}<\/script></body></html>`;
+  const htmlDataAttributes = Object.entries(themeTarget.dataset)
+    .map(([key, value]) => `data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${value}"`)
+    .join(' ');
+
+  return `<!doctype html><html ${htmlDataAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${DISPLAY_CSS}</style><style>${scrollOverrideCss}</style></head><body><div id="yomitan-scroll-root">${container.innerHTML}</div><script>${heightScript}<\/script></body></html>`;
 }
 
 export function joinTextBoxLines(lines: string[]) {

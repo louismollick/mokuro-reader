@@ -31,7 +31,9 @@ describe('YomitanDrawer', () => {
   });
 
   it('renders token buttons and dictionary iframe after token click', async () => {
-    coreMocks.tokenizeText.mockResolvedValue([{ text: '日本語', reading: 'にほんご', term: '日本語' }]);
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '日本語', reading: 'にほんご', term: '日本語', selectable: true, kind: 'word' }
+    ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
     coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
 
@@ -41,7 +43,6 @@ describe('YomitanDrawer', () => {
     });
 
     await waitFor(() => expect(getByText('日本語')).toBeTruthy());
-
     await fireEvent.click(getByText('日本語'));
 
     await waitFor(() => {
@@ -52,7 +53,9 @@ describe('YomitanDrawer', () => {
   });
 
   it('shows no entries message when lookup returns empty entries', async () => {
-    coreMocks.tokenizeText.mockResolvedValue([{ text: '猫', reading: 'ねこ', term: '猫' }]);
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
+    ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [], originalTextLength: 1 });
 
     const { getByText } = render(YomitanDrawer, {
@@ -67,5 +70,29 @@ describe('YomitanDrawer', () => {
       expect(getByText('No dictionary entries found for this token.')).toBeTruthy()
     );
   });
-});
 
+  it('renders punctuation tokens as non-clickable text', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' },
+      { text: '、', reading: '', term: '、', selectable: false, kind: 'other' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
+
+    const { container, getByText, getAllByRole } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫、'
+    });
+
+    await waitFor(() => {
+      const iframe = container.querySelector('iframe');
+      expect(iframe).toBeTruthy();
+    });
+
+    const punctuation = getByText('、');
+    expect(punctuation.tagName.toLowerCase()).toBe('span');
+
+    const wordButtons = getAllByRole('button').filter((button) => button.textContent?.trim() === '猫');
+    expect(wordButtons).toHaveLength(1);
+  });
+});

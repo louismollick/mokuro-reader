@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { Button } from 'flowbite-svelte';
+  import { sineIn, sineOut } from 'svelte/easing';
+  import { fly } from 'svelte/transition';
   import { showSnackbar } from '$lib/util/snackbar';
   import {
     buildEnabledDictionaryMap,
@@ -19,9 +22,17 @@
     open?: boolean;
     sourceText?: string;
     onClose?: () => void;
+    outsideClose?: boolean;
+    allowSwipeClose?: boolean;
   }
 
-  let { open = $bindable(false), sourceText = '', onClose }: Props = $props();
+  let {
+    open = $bindable(false),
+    sourceText = '',
+    onClose,
+    outsideClose = true,
+    allowSwipeClose = true
+  }: Props = $props();
 
   let dictionaries = $state<YomitanDictionarySummary[]>([]);
   let tokens = $state<YomitanToken[]>([]);
@@ -31,12 +42,30 @@
   let lookupLoading = $state(false);
   let errorMessage = $state('');
   let noEntries = $state(false);
+  let selectionMessage = $state('');
   let lookupFrame: HTMLIFrameElement | null = $state(null);
   let lookupFrameHeight = $state(0);
+  let prefersReducedMotion = $state(false);
+
+  let swiping = $state(false);
+  let swipePointerId = $state<number | null>(null);
+  let swipeStartY = $state(0);
+  let swipeStartTime = $state(0);
+  let swipeOffsetY = $state(0);
+
+  let dragStyle = $derived(
+    swiping ? `transform: translateY(${Math.max(0, swipeOffsetY)}px); transition: none;` : ''
+  );
 
   function closeDrawer() {
+    resetSwipe();
     open = false;
     onClose?.();
+  }
+
+  function handleBackdropClick() {
+    if (!outsideClose) return;
+    closeDrawer();
   }
 
   function resetDrawerState() {
@@ -46,9 +75,55 @@
     lookupHtml = '';
     errorMessage = '';
     noEntries = false;
+    selectionMessage = '';
     loading = false;
     lookupLoading = false;
     lookupFrameHeight = 0;
+    resetSwipe();
+  }
+
+  function resetSwipe() {
+    swiping = false;
+    swipePointerId = null;
+    swipeOffsetY = 0;
+    swipeStartY = 0;
+    swipeStartTime = 0;
+  }
+
+  function handleSheetPointerDown(event: PointerEvent) {
+    if (!allowSwipeClose) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    swipePointerId = event.pointerId;
+    swipeStartY = event.clientY;
+    swipeStartTime = performance.now();
+    swipeOffsetY = 0;
+    swiping = true;
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+  }
+
+  function handleSheetPointerMove(event: PointerEvent) {
+    if (!swiping || swipePointerId !== event.pointerId) return;
+    swipeOffsetY = Math.max(0, event.clientY - swipeStartY);
+  }
+
+  function completeSwipe(event: PointerEvent) {
+    if (!swiping || swipePointerId !== event.pointerId) return;
+
+    const elapsedMs = Math.max(1, performance.now() - swipeStartTime);
+    const velocity = swipeOffsetY / elapsedMs;
+    const shouldClose = swipeOffsetY > 84 || (swipeOffsetY > 28 && velocity > 0.7);
+
+    if (shouldClose) {
+      closeDrawer();
+      return;
+    }
+
+    resetSwipe();
+  }
+
+  function handleSheetPointerCancel(event: PointerEvent) {
+    if (swipePointerId !== event.pointerId) return;
+    resetSwipe();
   }
 
   function handleIframeMessage(event: MessageEvent) {
@@ -95,6 +170,14 @@
       tokens = await tokenizeText(text, enabledMap);
       if (tokens.length === 0) {
         errorMessage = 'No tokens found for this text.';
+        return;
+      }
+
+      const firstSelectableToken = tokens.find((token) => token.selectable);
+      if (firstSelectableToken) {
+        await handleTokenClick(firstSelectableToken);
+      } else {
+        selectionMessage = 'No selectable words found for this text.';
       }
     } catch (error) {
       console.error('Yomitan tokenization failed:', error);
@@ -105,10 +188,11 @@
   }
 
   async function handleTokenClick(token: YomitanToken) {
+    if (!token.selectable) return;
     selectedToken = token;
     lookupLoading = true;
     noEntries = false;
-    lookupHtml = '';
+    selectionMessage = '';
 
     try {
       const normalizedPreferences = normalizeDictionaryPreferences(
@@ -134,6 +218,22 @@
   }
 
   $effect(() => {
+    if (typeof window === 'undefined') return;
+
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const syncPreference = () => {
+      prefersReducedMotion = mediaQuery.matches;
+    };
+
+    syncPreference();
+    mediaQuery.addEventListener('change', syncPreference);
+
+    return () => {
+      mediaQuery.removeEventListener('change', syncPreference);
+    };
+  });
+
+  $effect(() => {
     if (!open) {
       resetDrawerState();
       return;
@@ -153,50 +253,82 @@
 />
 
 {#if open}
-  <div data-yomitan-drawer class="fixed inset-0 z-[12000] bg-gray-950/95 text-white">
-    <div class="flex h-full flex-col">
-      <div class="flex items-center justify-between border-b border-gray-700 px-4 py-3">
-        <div>
-          <h2 class="text-lg font-semibold">Yomitan</h2>
-          <p class="text-xs text-gray-400">Tap a token to view dictionary entries</p>
+  <div class="fixed inset-0 z-[12000] flex items-end justify-start md:pl-3">
+    <button
+      type="button"
+      aria-label="Close Yomitan popup"
+      class="absolute inset-0 bg-gray-950/35"
+      onclick={handleBackdropClick}
+    ></button>
+
+    <div
+      data-yomitan-drawer
+      class="relative z-10 flex h-[80vh] w-full flex-col overflow-hidden rounded-t-2xl border border-gray-700/80 bg-gray-900 text-white shadow-2xl md:w-1/2"
+      style={dragStyle}
+      in:fly={{
+        y: prefersReducedMotion ? 0 : 56,
+        duration: prefersReducedMotion ? 120 : 200,
+        easing: sineOut,
+        opacity: 1
+      }}
+      out:fly={{
+        y: prefersReducedMotion ? 0 : 56,
+        duration: prefersReducedMotion ? 120 : 200,
+        easing: sineIn,
+        opacity: 1
+      }}
+    >
+      <div
+        class="touch-none select-none px-4 pt-1.5 pb-0.5"
+        onpointerdown={handleSheetPointerDown}
+        onpointermove={handleSheetPointerMove}
+        onpointerup={completeSwipe}
+        onpointercancel={handleSheetPointerCancel}
+      >
+        <div class="flex justify-center">
+          <div class="h-1.5 w-10 rounded-full bg-gray-600/80"></div>
         </div>
-        <button
-          type="button"
-          class="rounded border border-gray-600 px-3 py-1 text-sm hover:bg-gray-800"
-          onclick={closeDrawer}
-        >
-          Close
-        </button>
       </div>
 
-      <div class="flex min-h-0 flex-1 flex-col md:grid md:grid-cols-[360px_1fr]">
-        <section
-          class="max-h-48 overflow-y-auto border-b border-gray-800 p-4 md:max-h-none md:border-r md:border-b-0"
-        >
+      <div class="min-h-0 flex flex-1 flex-col">
+        <section class="max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4">
           {#if loading}
-            <p class="text-sm text-gray-300">Loading Yomitan...</p>
+            <p class="text-[1.05rem] leading-8 text-gray-200">{sourceText}</p>
           {:else if errorMessage}
             <p class="text-sm text-red-300">{errorMessage}</p>
           {:else}
-            <div class="flex flex-wrap gap-2">
+            <div class="flex flex-wrap items-end text-gray-100">
               {#each tokens as token, index (`token-${index}-${token.text}`)}
-                <button
-                  type="button"
-                  class="rounded border border-gray-600 px-2 py-1 text-left text-sm hover:border-primary-500 hover:bg-gray-800"
-                  class:border-primary-500={selectedToken?.text === token.text}
-                  onclick={() => handleTokenClick(token)}
-                >
-                  {token.text}
-                </button>
+                {#if token.selectable}
+                  <button
+                    type="button"
+                    class={`inline rounded-sm px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 ${selectedToken === token ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
+                    onclick={() => handleTokenClick(token)}
+                  >
+                    {token.text}
+                  </button>
+                {:else}
+                  <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span>
+                {/if}
               {/each}
             </div>
           {/if}
         </section>
 
-        <section class="min-h-0 flex-1 overflow-hidden bg-white">
-          {#if lookupLoading}
-            <div class="flex h-full items-center justify-center text-sm text-gray-600">
-              Looking up token...
+        <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+          <div class="pointer-events-none absolute top-3 right-3 z-20">
+            <Button
+              outline
+              color="light"
+              class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
+              onclick={closeDrawer}
+              >Close</Button
+            >
+          </div>
+
+          {#if selectionMessage}
+            <div class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600">
+              {selectionMessage}
             </div>
           {:else if noEntries}
             <div class="flex h-full items-center justify-center text-sm text-gray-600">
@@ -213,10 +345,10 @@
                 srcdoc={lookupHtml}
               ></iframe>
             </div>
-          {:else}
-            <div class="flex h-full items-center justify-center text-sm text-gray-600">
-              Select a token to view dictionary results.
-            </div>
+          {/if}
+
+          {#if lookupLoading}
+            <div class="absolute inset-0 bg-[#1e1e1e]/35 backdrop-blur-[1px]"></div>
           {/if}
         </section>
       </div>
