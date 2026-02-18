@@ -47,6 +47,7 @@
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { ImageCache } from '$lib/reader/image-cache';
+  import { logYomitanDebug } from '$lib/yomitan/debug';
   import { joinTextBoxLines } from '$lib/yomitan/core';
   import '$lib/styles/page-transitions.css';
 
@@ -786,6 +787,15 @@
 
     // Always normalize from raw OCR lines to avoid stale/space-injected payloads.
     const sourceText = joinTextBoxLines(data.lines);
+    logYomitanDebug('reader', 'textbox:activate', {
+      blockIndex: data.blockIndex,
+      lineCount: data.lines.length,
+      rawLinePreview: data.lines.slice(0, 3),
+      clickTextLength: data.text.length,
+      clickTextPreview: data.text.slice(0, 120),
+      normalizedTextLength: sourceText.length,
+      normalizedTextPreview: sourceText.slice(0, 120)
+    });
     if (!sourceText) return;
 
     yomitanSourceText = sourceText;

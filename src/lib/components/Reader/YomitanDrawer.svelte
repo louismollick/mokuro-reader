@@ -13,6 +13,13 @@
     type YomitanToken
   } from '$lib/yomitan/core';
   import {
+    buildYomitanDebugSnapshot,
+    copyTextToClipboard,
+    getCodePointPreview,
+    isYomitanDebugEnabled,
+    logYomitanDebug
+  } from '$lib/yomitan/debug';
+  import {
     loadDictionaryPreferences,
     normalizeDictionaryPreferences,
     saveDictionaryPreferences
@@ -53,10 +60,44 @@
   let swipeStartY = $state(0);
   let swipeStartTime = $state(0);
   let swipeOffsetY = $state(0);
+  let debugEnabled = $state(false);
 
   let dragStyle = $derived(
     swiping ? `transform: translateY(${Math.max(0, swipeOffsetY)}px); transition: none;` : ''
   );
+
+  function debugYomitan(message: string, details?: Record<string, unknown>) {
+    logYomitanDebug('drawer', message, details);
+  }
+
+  async function copyDebugSnapshot() {
+    try {
+      const snapshot = buildYomitanDebugSnapshot({
+        drawer: {
+          open,
+          loading,
+          lookupLoading,
+          tokenCount: tokens.length,
+          selectableCount: tokens.filter((token) => token.selectable).length,
+          selectedTokenIndex,
+          hasLookupHtml: Boolean(lookupHtml),
+          noEntries,
+          errorMessage,
+          sourceTextLength: sourceText.length,
+          sourceTextPreview: sourceText.slice(0, 120),
+          sourceTextCodePoints: getCodePointPreview(sourceText),
+          dictionaryCount: dictionaries.length,
+          dictionaryTitles: dictionaries.map((item) => item.title)
+        }
+      });
+
+      await copyTextToClipboard(snapshot);
+      showSnackbar('Copied Yomitan debug snapshot.');
+    } catch (error) {
+      console.error('Failed to copy Yomitan debug snapshot:', error);
+      showSnackbar('Failed to copy Yomitan debug snapshot.');
+    }
+  }
 
   function closeDrawer() {
     resetSwipe();
@@ -143,8 +184,18 @@
 
   async function loadAndTokenizeText() {
     const text = sourceText.trim();
+    debugYomitan('load:start', {
+      sourceTextLength: sourceText.length,
+      sourceTextPreview: sourceText.slice(0, 120),
+      sourceTextCodePoints: getCodePointPreview(sourceText),
+      trimmedLength: text.length,
+      trimmedPreview: text.slice(0, 120),
+      trimmedCodePoints: getCodePointPreview(text)
+    });
+
     if (!text) {
       errorMessage = 'No text found for this box.';
+      debugYomitan('load:empty-text', { sourceText });
       return;
     }
 
@@ -153,6 +204,10 @@
 
     try {
       dictionaries = await getInstalledDictionaries();
+      debugYomitan('load:dictionaries', {
+        dictionaryCount: dictionaries.length,
+        dictionaryTitles: dictionaries.map((item) => item.title)
+      });
       if (dictionaries.length === 0) {
         errorMessage = 'No Yomitan dictionaries installed. Add dictionaries in Settings > Yomitan.';
         return;
@@ -165,14 +220,32 @@
       saveDictionaryPreferences(normalizedPreferences);
 
       const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      debugYomitan('load:dictionary-preferences', {
+        normalizedPreferences,
+        enabledDictionaryCount: enabledMap.size
+      });
       if (enabledMap.size === 0) {
         errorMessage = 'All dictionaries are disabled. Enable at least one in Settings > Yomitan.';
         return;
       }
 
       tokens = await tokenizeText(text, enabledMap);
+      debugYomitan('load:tokenize-complete', {
+        tokenCount: tokens.length,
+        selectableCount: tokens.filter((token) => token.selectable).length,
+        tokenPreview: tokens.slice(0, 10).map((token) => ({
+          text: token.text,
+          selectable: token.selectable,
+          reading: token.reading
+        }))
+      });
       if (tokens.length === 0) {
         errorMessage = 'No tokens found for this text.';
+        debugYomitan('load:no-tokens', {
+          textLength: text.length,
+          textPreview: text.slice(0, 120),
+          textCodePoints: getCodePointPreview(text)
+        });
         return;
       }
 
@@ -184,6 +257,9 @@
       }
     } catch (error) {
       console.error('Yomitan tokenization failed:', error);
+      debugYomitan('load:tokenization-failed', {
+        error: error instanceof Error ? error.message : String(error)
+      });
       errorMessage = 'Failed to initialize Yomitan.';
     } finally {
       loading = false;
@@ -207,8 +283,18 @@
         loadDictionaryPreferences()
       );
       const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      debugYomitan('lookup:start', {
+        tokenText: token.text,
+        tokenIndex: index,
+        enabledDictionaryCount: enabledMap.size
+      });
 
       const lookup = await lookupTerm(token.text, enabledMap);
+      debugYomitan('lookup:complete', {
+        tokenText: token.text,
+        entryCount: lookup.entries.length,
+        originalTextLength: lookup.originalTextLength
+      });
       if (!lookup.entries.length) {
         noEntries = true;
         return;
@@ -218,6 +304,10 @@
       awaitingLookupFrameLoad = true;
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
+      debugYomitan('lookup:failed', {
+        tokenText: token.text,
+        error: error instanceof Error ? error.message : String(error)
+      });
       showSnackbar('Failed to look up token in Yomitan.');
       noEntries = true;
     } finally {
@@ -255,6 +345,7 @@
       return;
     }
 
+    debugEnabled = isYomitanDebugEnabled();
     loadAndTokenizeText();
   });
 </script>
@@ -338,7 +429,16 @@
 
         <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
           {#if !loading}
-            <div class="fade-in pointer-events-none absolute top-3 right-3 z-20">
+            <div class="fade-in pointer-events-none absolute top-3 right-3 z-20 flex gap-2">
+              {#if debugEnabled}
+                <Button
+                  outline
+                  color="light"
+                  class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
+                  onclick={copyDebugSnapshot}
+                  >Copy debug snapshot</Button
+                >
+              {/if}
               <Button
                 outline
                 color="light"

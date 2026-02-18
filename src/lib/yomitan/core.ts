@@ -1,4 +1,5 @@
 import type { DictionaryPreference } from './preferences';
+import { getCodePointPreview, logYomitanDebug } from './debug';
 
 export interface YomitanDictionarySummary {
   title: string;
@@ -155,6 +156,13 @@ export async function deleteDictionary(title: string) {
 export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
   const core = await getCoreInstance();
   const parserDictionaryMap = toFindTermDictionaryMap(enabledDictionaryMap);
+  logYomitanDebug('core', 'tokenize:start', {
+    textLength: text.length,
+    textPreview: text.slice(0, 80),
+    textCodePoints: getCodePointPreview(text),
+    enabledDictionaryCount: parserDictionaryMap.size,
+    enabledDictionaryNames: [...parserDictionaryMap.keys()]
+  });
 
   const parsed = (await core.parseText(text, {
     language: 'ja',
@@ -167,6 +175,10 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
   })) as Array<{
     content?: Array<Array<{ text?: string; reading?: string; headwords?: unknown[][] }>>;
   }>;
+  logYomitanDebug('core', 'tokenize:parseText-complete', {
+    parseResultCount: parsed.length,
+    contentBlockCount: parsed.reduce((total, parseResult) => total + (parseResult.content?.length || 0), 0)
+  });
 
   const tokens: YomitanToken[] = [];
   for (const parseResult of parsed) {
@@ -189,6 +201,15 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
       }
     }
   }
+  logYomitanDebug('core', 'tokenize:complete', {
+    tokenCount: tokens.length,
+    selectableCount: tokens.filter((token) => token.selectable).length,
+    tokenPreview: tokens.slice(0, 10).map((token) => ({
+      text: token.text,
+      selectable: token.selectable,
+      reading: token.reading
+    }))
+  });
   return tokens;
 }
 

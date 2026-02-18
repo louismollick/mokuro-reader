@@ -9,6 +9,7 @@ export default defineConfig({
   },
   server: {
     host: true,
+    allowedHosts: true,
     fs: {
       // Allow serving package.json for version info import
       allow: ['..']
