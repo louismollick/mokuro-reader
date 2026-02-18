@@ -73,7 +73,7 @@
     "pica": "^9.0.1",
     "svelte-easy-crop": "^5.0.0",
     "webdav": "^5.8.0",
-    "yomitan-core": "^1.0.2"
+    "yomitan-core": "^1.2.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
