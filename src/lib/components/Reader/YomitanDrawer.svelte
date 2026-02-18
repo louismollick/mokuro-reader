@@ -135,8 +135,16 @@
 
   function handleSheetPointerDown(event: PointerEvent) {
     if (!allowSwipeClose) return;
+    if (!event.isPrimary) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
+    const target = event.target;
+    if (
+      event.pointerType === 'mouse' &&
+      target instanceof Element &&
+      target.closest('button, a, input, textarea, select, [role="button"]')
+    ) {
+      return;
+    }
     swipePointerId = event.pointerId;
     swipeStartY = event.clientY;
     swipeStartTime = performance.now();
@@ -391,18 +399,17 @@
       }}
     >
       <div
-        class="touch-none select-none px-4 pt-1.5 pb-0.5"
+        class="shrink-0"
         onpointerdown={handleSheetPointerDown}
         onpointermove={handleSheetPointerMove}
         onpointerup={completeSwipe}
         onpointercancel={handleSheetPointerCancel}
       >
-        <div class="flex justify-center">
-          <div class="h-1.5 w-10 rounded-full bg-gray-600/80"></div>
+        <div class="touch-none select-none px-4 pt-1.5 pb-0.5">
+          <div class="flex justify-center">
+            <div class="h-1.5 w-10 rounded-full bg-gray-600/80"></div>
+          </div>
         </div>
-      </div>
-
-      <div class="min-h-0 flex flex-1 flex-col bg-gray-900">
         {#if !loading}
           <section class="fade-in max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4">
             {#if errorMessage}
@@ -426,7 +433,9 @@
             {/if}
           </section>
         {/if}
+      </div>
 
+      <div class="min-h-0 flex flex-1 flex-col bg-gray-900">
         <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
           {#if !loading}
             <div class="fade-in pointer-events-none absolute top-3 right-3 z-20 flex gap-2">
