@@ -10,6 +10,9 @@ describe('migrateProfiles', () => {
     });
 
     expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(false);
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupDeckName).toBe('Default');
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupModelName).toBe('Basic');
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupFieldMappings).toEqual({});
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupDuplicateBehavior).toBe('new');
   });
 });
-

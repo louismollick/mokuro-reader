@@ -5,9 +5,13 @@
   import {
     DYNAMIC_TAGS,
     DEFAULT_ANKI_TAGS,
+    getDeckNames,
+    getModelFieldNames,
+    getModelNames,
     testConnection,
     type ConnectionTestResult
   } from '$lib/anki-connect';
+  import { getPopupFieldMarkers } from '$lib/yomitan/anki-note';
 
   let disabled = $derived(!$settings.ankiConnectSettings.enabled);
 
@@ -28,8 +32,20 @@
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
   let deckName = $state($settings.ankiConnectSettings.deckName);
   let modelName = $state($settings.ankiConnectSettings.modelName);
+  let popupDeckName = $state($settings.ankiConnectSettings.popupDeckName);
+  let popupModelName = $state($settings.ankiConnectSettings.popupModelName);
+  let popupFieldMappings = $state({ ...$settings.ankiConnectSettings.popupFieldMappings });
+
+  let popupDecks = $state<string[]>([]);
+  let popupModels = $state<string[]>([]);
+  let popupModelFields = $state<string[]>([]);
+  let popupFieldMarkers = $state<string[]>([]);
+  let popupMarkerInputByField = $state<Record<string, string>>({});
+  let loadingPopupConfig = $state(false);
 
   let isCreateMode = $derived(cardMode === 'create');
+  let popupDeckOptions = $derived(popupDecks.map((item) => ({ value: item, name: item })));
+  let popupModelOptions = $derived(popupModels.map((item) => ({ value: item, name: item })));
 
   const cardModeOptions = [
     { value: 'update', name: 'Update last card (within 5 min)' },
@@ -50,9 +66,105 @@
     connectionStatus = null;
     try {
       connectionStatus = await testConnection(url || undefined);
+      if (connectionStatus.success) {
+        await loadPopupConfig();
+      }
     } finally {
       isTesting = false;
     }
+  }
+
+  async function loadPopupConfig() {
+    loadingPopupConfig = true;
+    try {
+      const [decks, models, markers] = await Promise.all([
+        getDeckNames(),
+        getModelNames(),
+        getPopupFieldMarkers()
+      ]);
+
+      popupDecks = decks;
+      popupModels = models;
+      popupFieldMarkers = markers;
+
+      if (popupModelName) {
+        await loadPopupModelFields(popupModelName);
+      } else if (models.length > 0) {
+        popupModelName = models[0];
+        updateAnkiSetting('popupModelName', popupModelName);
+        await loadPopupModelFields(popupModelName);
+      }
+
+      if (!popupDeckName && decks.length > 0) {
+        popupDeckName = decks[0];
+        updateAnkiSetting('popupDeckName', popupDeckName);
+      }
+    } finally {
+      loadingPopupConfig = false;
+    }
+  }
+
+  async function loadPopupModelFields(model: string) {
+    popupModelFields = await getModelFieldNames(model);
+    const merged = { ...popupFieldMappings };
+    for (const field of popupModelFields) {
+      if (typeof merged[field] !== 'string') {
+        merged[field] = '';
+      }
+    }
+    popupFieldMappings = merged;
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+  }
+
+  async function onPopupModelChange() {
+    updateAnkiSetting('popupModelName', popupModelName);
+    if (!popupModelName) return;
+    await loadPopupModelFields(popupModelName);
+  }
+
+  function updatePopupFieldMapping(field: string, value: string) {
+    popupFieldMappings = {
+      ...popupFieldMappings,
+      [field]: value
+    };
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+  }
+
+  function insertPopupMarker(field: string, marker: string) {
+    const current = popupFieldMappings[field] || '';
+    updatePopupFieldMapping(field, current ? `${current} ${`{${marker}}`}` : `{${marker}}`);
+  }
+
+  function setPopupMarkerInput(field: string, value: string) {
+    popupMarkerInputByField = { ...popupMarkerInputByField, [field]: value };
+  }
+
+  function insertPopupMarkerFromInput(field: string) {
+    const raw = popupMarkerInputByField[field]?.trim() || '';
+    if (!raw) return;
+    const normalized = raw.replace(/^\{+/, '').replace(/\}+$/, '');
+    if (!normalized) return;
+    insertPopupMarker(field, normalized);
+    setPopupMarkerInput(field, '');
+  }
+
+  function applyRecommendedPopupMappings() {
+    const next = { ...popupFieldMappings };
+    const hasField = (needle: string) =>
+      popupModelFields.find((field) => field.toLowerCase().includes(needle.toLowerCase()));
+
+    const expressionField = hasField('expression') || popupModelFields[0];
+    const readingField = hasField('reading');
+    const glossaryField = hasField('definition') || hasField('glossary');
+    const sentenceField = hasField('sentence');
+
+    if (expressionField) next[expressionField] = '{expression}';
+    if (readingField) next[readingField] = '{reading}';
+    if (glossaryField) next[glossaryField] = '{glossary}';
+    if (sentenceField) next[sentenceField] = '{sentence}';
+
+    popupFieldMappings = next;
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
   }
 
   function updateDoubleTap(enabled: boolean) {
@@ -100,6 +212,9 @@
           onchange={() => {
             updateAnkiSetting('url', url);
             connectionStatus = null;
+            popupDecks = [];
+            popupModels = [];
+            popupModelFields = [];
           }}
           class="flex-1"
         />
@@ -134,6 +249,116 @@
         <Helper class="mt-1">Use a custom URL to connect to AnkiConnect on another device</Helper>
       {/if}
     </div>
+    <div class="rounded border border-gray-700 p-3">
+      <div class="mb-2 flex items-center justify-between">
+        <h4 class="text-sm font-semibold text-gray-900 dark:text-white">Yomitan Popup Note Mapping</h4>
+        <Button
+          size="xs"
+          color="alternative"
+          onclick={loadPopupConfig}
+          disabled={disabled || loadingPopupConfig}
+        >
+          {loadingPopupConfig ? 'Loading...' : 'Refresh'}
+        </Button>
+      </div>
+      <Helper class="mb-3">
+        Configure deck/model and marker-based field mappings used by “Add to Anki” in the Yomitan popup.
+      </Helper>
+
+      <div class="mb-3">
+        <Label class="text-gray-900 dark:text-white">
+          Popup deck:
+          <Select
+            {disabled}
+            items={popupDeckOptions}
+            bind:value={popupDeckName}
+            onchange={() => updateAnkiSetting('popupDeckName', popupDeckName)}
+          />
+        </Label>
+      </div>
+
+      <div class="mb-3">
+        <Label class="text-gray-900 dark:text-white">
+          Popup model:
+          <Select
+            {disabled}
+            items={popupModelOptions}
+            bind:value={popupModelName}
+            onchange={onPopupModelChange}
+          />
+        </Label>
+      </div>
+
+      <div class="mb-3">
+        <Button {disabled} size="xs" color="alternative" onclick={applyRecommendedPopupMappings}>
+          Apply recommended mapping
+        </Button>
+      </div>
+
+      {#if popupModelFields.length === 0}
+        <p class="text-xs text-gray-400">No model fields loaded yet. Test connection, then refresh.</p>
+      {:else}
+        <div class="flex flex-col gap-3">
+          {#each popupModelFields as field, fieldIndex}
+            <div class="rounded border border-gray-700 p-2">
+              <Label class="mb-1 text-gray-900 dark:text-white">{field}</Label>
+              <Input
+                {disabled}
+                type="text"
+                value={popupFieldMappings[field] || ''}
+                onchange={(event) =>
+                  updatePopupFieldMapping(field, (event.currentTarget as HTMLInputElement).value)}
+                placeholder={'{expression}'}
+              />
+              <div class="mt-2 flex gap-2">
+                <Input
+                  {disabled}
+                  type="text"
+                  value={popupMarkerInputByField[field] || ''}
+                  oninput={(event) =>
+                    setPopupMarkerInput(field, (event.currentTarget as HTMLInputElement).value)}
+                  onkeydown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      insertPopupMarkerFromInput(field);
+                    }
+                  }}
+                  list={`popup-marker-options-${fieldIndex}`}
+                  placeholder="Type marker name (e.g. single-glossary-jmdict)"
+                />
+                <Button
+                  {disabled}
+                  size="xs"
+                  color="alternative"
+                  onclick={() => insertPopupMarkerFromInput(field)}
+                >
+                  Insert
+                </Button>
+                <datalist id={`popup-marker-options-${fieldIndex}`}>
+                  {#each popupFieldMarkers as marker}
+                    <option value={marker}></option>
+                  {/each}
+                </datalist>
+              </div>
+              <div class="mt-2 flex flex-wrap gap-1">
+                {#each popupFieldMarkers as marker}
+                  <button
+                    type="button"
+                    {disabled}
+                    onclick={() => insertPopupMarker(field, marker)}
+                    class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+                  >
+                    {`{${marker}}`}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+    <hr />
+    <h4 class="text-gray-900 dark:text-white">Image Capture Card Settings</h4>
     <div>
       <Label class="text-gray-900 dark:text-white">Picture field:</Label>
       <Input

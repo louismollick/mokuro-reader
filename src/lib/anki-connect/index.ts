@@ -146,9 +146,32 @@ export async function ankiConnect(action: string, params: Record<string, any>) {
   }
 }
 
+export async function syncAnkiWeb() {
+  const result = await ankiConnect('sync', {});
+  return result !== undefined;
+}
+
 export async function getCardInfo(id: string) {
   const [noteInfo] = await ankiConnect('notesInfo', { notes: [id] });
   return noteInfo;
+}
+
+export async function getDeckNames(): Promise<string[]> {
+  const result = await ankiConnect('deckNames', {});
+  if (!Array.isArray(result)) return [];
+  return result.filter((name): name is string => typeof name === 'string').sort((a, b) => a.localeCompare(b));
+}
+
+export async function getModelNames(): Promise<string[]> {
+  const result = await ankiConnect('modelNames', {});
+  if (!Array.isArray(result)) return [];
+  return result.filter((name): name is string => typeof name === 'string').sort((a, b) => a.localeCompare(b));
+}
+
+export async function getModelFieldNames(modelName: string): Promise<string[]> {
+  const result = await ankiConnect('modelFieldNames', { modelName });
+  if (!Array.isArray(result)) return [];
+  return result.filter((name): name is string => typeof name === 'string');
 }
 
 export async function getLastCardId() {
@@ -304,6 +327,7 @@ export async function createCard(
   const result = await ankiConnect('addNote', { note: notePayload });
 
   if (result) {
+    await syncAnkiWeb();
     showSnackbar('Card created!');
   } else {
     // ankiConnect already showed the error via showSnackbar

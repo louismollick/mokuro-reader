@@ -1103,6 +1103,13 @@
   <YomitanDrawer
     bind:open={showYomitanDrawer}
     sourceText={yomitanSourceText}
+    ankiEnabled={$settings.ankiConnectSettings.enabled}
+    volumeMetadata={volume
+      ? {
+          seriesTitle: volume.series_title,
+          volumeTitle: volume.volume_title
+        }
+      : undefined}
     onClose={() => {
       showYomitanDrawer = false;
     }}

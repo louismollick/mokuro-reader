@@ -6,6 +6,7 @@ export interface YomitanDictionarySummary {
   revision: string;
   importDate: number;
   version: number;
+  styles?: string;
 }
 
 export interface YomitanToken {
@@ -19,13 +20,19 @@ export interface YomitanToken {
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
 
 const YOMITAN_CORE_INDEX_CANDIDATES = [
+  '/@fs/Users/mollicl/yomitan-core/src/index.ts',
+  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/src/index.ts',
+  '/@id/yomitan-core',
   '/@fs/Users/mollicl/yomitan-core/dist/index.js',
-  '/@fs/Users/mollicl/yomitan-core/src/index.ts'
+  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/dist/index.js'
 ];
 
 const YOMITAN_CORE_RENDER_CANDIDATES = [
+  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts',
+  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/src/render/index.ts',
+  '/@id/yomitan-core/render',
   '/@fs/Users/mollicl/yomitan-core/dist/render.js',
-  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts'
+  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/dist/render.js'
 ];
 
 let coreInstance: any | null = null;
@@ -45,29 +52,11 @@ async function tryImport(specifiers: string[]) {
 }
 
 async function importCoreIndexModule() {
-  if (import.meta.env.DEV) {
-    try {
-      return await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
-    } catch {
-      // Fall back to package import below.
-    }
-  }
-
-  // Use a literal specifier so Vite can resolve and bundle it for production.
-  return await import('yomitan-core');
+  return await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
 }
 
 async function importCoreRenderModule() {
-  if (import.meta.env.DEV) {
-    try {
-      return await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
-    } catch {
-      // Fall back to package import below.
-    }
-  }
-
-  // Use a literal specifier so Vite can resolve and bundle it for production.
-  return await import('yomitan-core/render');
+  return await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
 }
 
 async function getCoreInstance() {
@@ -230,7 +219,7 @@ export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabl
   return result;
 }
 
-export async function renderTermEntriesHtml(entries: unknown[]) {
+export async function renderTermEntriesHtml(entries: unknown[], options?: { showAnkiAddButton?: boolean }) {
   const core = await getCoreInstance();
   const dictionaryInfo = await core.getDictionaryInfo();
 
@@ -264,8 +253,21 @@ export async function renderTermEntriesHtml(entries: unknown[]) {
   const container = document.createElement('div');
   container.className = 'yomitan-results';
 
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const node = generator.createTermEntry(entry, dictionaryInfo);
+    if (options?.showAnkiAddButton) {
+      const actionBar = document.createElement('div');
+      actionBar.className = 'yomitan-anki-actions';
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'yomitan-anki-add';
+      button.dataset.entryIndex = `${index}`;
+      button.textContent = 'Add to Anki';
+      actionBar.appendChild(button);
+
+      node.appendChild(actionBar);
+    }
     container.appendChild(node);
   }
 
@@ -286,10 +288,37 @@ body {
   -webkit-overflow-scrolling: touch;
   background-color: #1e1e1e;
 }
+.yomitan-anki-actions {
+  margin: 8px 0 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+.yomitan-anki-add {
+  border: 1px solid #2f6fed;
+  background: #2f6fed;
+  color: white;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.yomitan-anki-add:hover {
+  background: #2459be;
+}
 `;
 
   const heightScript = `
 (() => {
+  const onClick = (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const button = target.closest('.yomitan-anki-add');
+    if (!(button instanceof HTMLElement)) return;
+    const entryIndex = Number(button.dataset.entryIndex);
+    if (Number.isNaN(entryIndex)) return;
+    window.parent?.postMessage({ type: 'yomitan-add-note', entryIndex }, '*');
+  };
+
   const sendHeight = () => {
     const height = Math.max(
       document.documentElement?.scrollHeight ?? 0,
@@ -300,6 +329,7 @@ body {
 
   window.addEventListener('load', sendHeight);
   window.addEventListener('resize', sendHeight);
+  window.addEventListener('click', onClick);
   setTimeout(sendHeight, 0);
   setTimeout(sendHeight, 50);
   setTimeout(sendHeight, 250);

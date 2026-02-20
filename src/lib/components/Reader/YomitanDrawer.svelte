@@ -24,10 +24,14 @@
     normalizeDictionaryPreferences,
     saveDictionaryPreferences
   } from '$lib/yomitan/preferences';
+  import { addPopupAnkiNote } from '$lib/yomitan/anki-note';
+  import type { VolumeMetadata } from '$lib/anki-connect';
 
   interface Props {
     open?: boolean;
     sourceText?: string;
+    ankiEnabled?: boolean;
+    volumeMetadata?: VolumeMetadata;
     onClose?: () => void;
     outsideClose?: boolean;
     allowSwipeClose?: boolean;
@@ -36,6 +40,8 @@
   let {
     open = $bindable(false),
     sourceText = '',
+    ankiEnabled = false,
+    volumeMetadata,
     onClose,
     outsideClose = true,
     allowSwipeClose = true
@@ -54,6 +60,9 @@
   let lookupFrameHeight = $state(0);
   let awaitingLookupFrameLoad = $state(false);
   let prefersReducedMotion = $state(false);
+  let lookupEntries = $state<unknown[]>([]);
+  let selectedTokenText = $state('');
+  let addingToAnki = $state(false);
 
   let swiping = $state(false);
   let swipePointerId = $state<number | null>(null);
@@ -122,6 +131,9 @@
     lookupLoading = false;
     awaitingLookupFrameLoad = false;
     lookupFrameHeight = 0;
+    lookupEntries = [];
+    selectedTokenText = '';
+    addingToAnki = false;
     resetSwipe();
   }
 
@@ -181,12 +193,50 @@
   function handleIframeMessage(event: MessageEvent) {
     if (!lookupFrame || event.source !== lookupFrame.contentWindow) return;
 
-    const data = event.data as { type?: string; height?: unknown } | null;
-    if (!data || data.type !== 'yomitan-iframe-height') return;
+    const data = event.data as { type?: string; height?: unknown; entryIndex?: unknown } | null;
+    if (!data) return;
 
-    const nextHeight = typeof data.height === 'number' ? Math.ceil(data.height) : 0;
-    if (nextHeight > 0) {
-      lookupFrameHeight = nextHeight;
+    if (data.type === 'yomitan-iframe-height') {
+      const nextHeight = typeof data.height === 'number' ? Math.ceil(data.height) : 0;
+      if (nextHeight > 0) {
+        lookupFrameHeight = nextHeight;
+      }
+      return;
+    }
+
+    if (data.type === 'yomitan-add-note') {
+      const entryIndex = typeof data.entryIndex === 'number' ? data.entryIndex : Number(data.entryIndex);
+      if (!Number.isFinite(entryIndex) || entryIndex < 0 || entryIndex >= lookupEntries.length) {
+        return;
+      }
+      void handleAddToAnki(entryIndex);
+    }
+  }
+
+  async function handleAddToAnki(entryIndex: number) {
+    if (!ankiEnabled) {
+      showSnackbar('Enable Anki integration in settings first.');
+      return;
+    }
+
+    const entry = lookupEntries[entryIndex];
+    if (!entry) return;
+
+    addingToAnki = true;
+    try {
+      const source = selectedTokenText || sourceText;
+      const result = await addPopupAnkiNote(entry, source, volumeMetadata);
+      if (result.noteId) {
+        showSnackbar('Added note to Anki.');
+      } else {
+        showSnackbar('Failed to add note to Anki.');
+      }
+    } catch (error) {
+      console.error('Failed to add Yomitan note to Anki:', error);
+      const message = error instanceof Error ? error.message : String(error);
+      showSnackbar(`Failed to add note: ${message}`);
+    } finally {
+      addingToAnki = false;
     }
   }
 
@@ -298,6 +348,8 @@
       });
 
       const lookup = await lookupTerm(token.text, enabledMap);
+      selectedTokenText = token.text;
+      lookupEntries = lookup.entries;
       debugYomitan('lookup:complete', {
         tokenText: token.text,
         entryCount: lookup.entries.length,
@@ -308,7 +360,7 @@
         return;
       }
 
-      lookupHtml = await renderTermEntriesHtml(lookup.entries);
+      lookupHtml = await renderTermEntriesHtml(lookup.entries, { showAnkiAddButton: ankiEnabled });
       awaitingLookupFrameLoad = true;
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
@@ -439,6 +491,11 @@
         <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
           {#if !loading}
             <div class="fade-in pointer-events-none absolute top-3 right-3 z-20 flex gap-2">
+              {#if addingToAnki}
+                <div class="pointer-events-auto rounded bg-gray-800/90 px-2 py-1 text-xs text-gray-100">
+                  Adding...
+                </div>
+              {/if}
               {#if debugEnabled}
                 <Button
                   outline

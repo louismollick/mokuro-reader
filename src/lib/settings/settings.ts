@@ -39,6 +39,10 @@ export type AnkiConnectSettings = {
   cardMode: 'update' | 'create';
   deckName: string;
   modelName: string;
+  popupDeckName: string;
+  popupModelName: string;
+  popupFieldMappings: Record<string, string>;
+  popupDuplicateBehavior: 'new';
 };
 
 export type TimeSchedule = {
@@ -167,7 +171,11 @@ const defaultSettings: Settings = {
     tags: '{series}',
     cardMode: 'update',
     deckName: 'Default',
-    modelName: 'Basic'
+    modelName: 'Basic',
+    popupDeckName: 'Default',
+    popupModelName: 'Basic',
+    popupFieldMappings: {},
+    popupDuplicateBehavior: 'new'
   },
   catalogSettings: {
     stackingPreset: 'default',
