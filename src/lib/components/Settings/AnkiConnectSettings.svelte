@@ -40,12 +40,16 @@
   let popupModels = $state<string[]>([]);
   let popupModelFields = $state<string[]>([]);
   let popupFieldMarkers = $state<string[]>([]);
-  let popupMarkerInputByField = $state<Record<string, string>>({});
   let loadingPopupConfig = $state(false);
 
   let isCreateMode = $derived(cardMode === 'create');
   let popupDeckOptions = $derived(popupDecks.map((item) => ({ value: item, name: item })));
   let popupModelOptions = $derived(popupModels.map((item) => ({ value: item, name: item })));
+  let popupMappingButtonLabel = $derived(
+    popupModelName.trim().toLowerCase() === 'lapis'
+      ? 'Use recommended Lapis mapping'
+      : 'Use default mapping'
+  );
 
   const cardModeOptions = [
     { value: 'update', name: 'Update last card (within 5 min)' },
@@ -60,6 +64,20 @@
   // Connection test state
   let connectionStatus = $state<ConnectionTestResult | null>(null);
   let isTesting = $state(false);
+  let ankiSectionOpen = $state(false);
+  let wasAnkiSectionOpen = $state(false);
+
+  $effect(() => {
+    const justOpened = ankiSectionOpen && !wasAnkiSectionOpen;
+    wasAnkiSectionOpen = ankiSectionOpen;
+    if (!justOpened) return;
+
+    if (!enabled) return;
+    if (!url?.trim()) return;
+
+    // Auto-connect when opening this section so popup config is available without manual "Test".
+    void handleTestConnection();
+  });
 
   async function handleTestConnection() {
     isTesting = true;
@@ -132,38 +150,69 @@
     updateAnkiSetting('popupFieldMappings', popupFieldMappings);
   }
 
-  function insertPopupMarker(field: string, marker: string) {
-    const current = popupFieldMappings[field] || '';
-    updatePopupFieldMapping(field, current ? `${current} ${`{${marker}}`}` : `{${marker}}`);
-  }
-
-  function setPopupMarkerInput(field: string, value: string) {
-    popupMarkerInputByField = { ...popupMarkerInputByField, [field]: value };
-  }
-
-  function insertPopupMarkerFromInput(field: string) {
-    const raw = popupMarkerInputByField[field]?.trim() || '';
-    if (!raw) return;
-    const normalized = raw.replace(/^\{+/, '').replace(/\}+$/, '');
-    if (!normalized) return;
-    insertPopupMarker(field, normalized);
-    setPopupMarkerInput(field, '');
-  }
-
   function applyRecommendedPopupMappings() {
     const next = { ...popupFieldMappings };
-    const hasField = (needle: string) =>
-      popupModelFields.find((field) => field.toLowerCase().includes(needle.toLowerCase()));
+    const findField = (name: string) =>
+      popupModelFields.find((field) => field.toLowerCase() === name.toLowerCase()) ||
+      popupModelFields.find((field) => field.toLowerCase().includes(name.toLowerCase()));
 
-    const expressionField = hasField('expression') || popupModelFields[0];
-    const readingField = hasField('reading');
-    const glossaryField = hasField('definition') || hasField('glossary');
-    const sentenceField = hasField('sentence');
+    const pickPreferredMainDefinitionMarker = () => {
+      const scoreMarker = (marker: string) => {
+        const lower = marker.toLowerCase();
+        let score = 0;
+        // Prefer any single-glossary marker; dictionary/version suffixes are dynamic.
+        if (lower.startsWith('single-glossary-')) score += 1000;
+        else if (lower.includes('single-glossary')) score += 500;
 
-    if (expressionField) next[expressionField] = '{expression}';
-    if (readingField) next[readingField] = '{reading}';
-    if (glossaryField) next[glossaryField] = '{glossary}';
-    if (sentenceField) next[sentenceField] = '{sentence}';
+        // Prefer common "main definition" bilingual dictionaries if available.
+        if (lower.includes('jitendex')) score += 100;
+        if (lower.includes('jmdict')) score += 80;
+
+        // Keep glossary-family markers ahead of unrelated markers.
+        if (lower.includes('glossary')) score += 10;
+        return score;
+      };
+
+      const best = [...popupFieldMarkers]
+        .map((marker) => ({ marker, score: scoreMarker(marker) }))
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)[0];
+
+      return best ? `{${best.marker}}` : '{glossary}';
+    };
+
+    if (popupModelName.trim().toLowerCase() === 'lapis') {
+      const lapisMappings: Array<[string, string]> = [
+        ['Expression', '{expression}'],
+        ['ExpressionFurigana', '{furigana-plain}'],
+        ['ExpressionReading', '{reading}'],
+        ['ExpressionAudio', '{audio}'],
+        ['SelectionText', '{popup-selection-text}'],
+        ['MainDefinition', pickPreferredMainDefinitionMarker()],
+        ['Sentence', '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}'],
+        ['Glossary', '{glossary}'],
+        ['PitchPosition', '{pitch-accent-positions}'],
+        ['PitchCategories', '{pitch-accent-categories}'],
+        ['Frequency', '{frequencies}'],
+        ['FreqSort', '{frequency-harmonic-rank}'],
+        ['MiscInfo', '{document-title}']
+      ];
+
+      for (const [fieldName, value] of lapisMappings) {
+        const field = findField(fieldName);
+        if (field) next[field] = value;
+      }
+    } else {
+      const expressionField = findField('expression') || popupModelFields[0];
+      const readingField = findField('reading');
+      const glossaryField = findField('definition') || findField('glossary');
+      const sentenceField = findField('sentence');
+
+      if (expressionField) next[expressionField] = '{expression}';
+      if (readingField) next[readingField] = '{reading}';
+      if (glossaryField) next[glossaryField] = '{glossary}';
+      if (sentenceField) next[sentenceField] = '{sentence}';
+    }
 
     popupFieldMappings = next;
     updateAnkiSetting('popupFieldMappings', popupFieldMappings);
@@ -186,7 +235,7 @@
   }
 </script>
 
-<AccordionItem>
+<AccordionItem bind:open={ankiSectionOpen}>
   {#snippet header()}Anki Connect{/snippet}
   <div class="flex flex-col gap-5">
     <Helper
@@ -296,7 +345,7 @@
 
       <div class="mb-3">
         <Button {disabled} size="xs" color="alternative" onclick={applyRecommendedPopupMappings}>
-          Apply recommended mapping
+          {popupMappingButtonLabel}
         </Button>
       </div>
 
@@ -306,7 +355,7 @@
         </p>
       {:else}
         <div class="flex flex-col gap-3">
-          {#each popupModelFields as field, fieldIndex}
+          {#each popupModelFields as field}
             <div class="rounded border border-gray-700 p-2">
               <Label class="mb-1 text-gray-900 dark:text-white">{field}</Label>
               <Input
@@ -315,52 +364,16 @@
                 value={popupFieldMappings[field] || ''}
                 onchange={(event) =>
                   updatePopupFieldMapping(field, (event.currentTarget as HTMLInputElement).value)}
+                list="popup-marker-options"
                 placeholder={'{expression}'}
               />
-              <div class="mt-2 flex gap-2">
-                <Input
-                  {disabled}
-                  type="text"
-                  value={popupMarkerInputByField[field] || ''}
-                  oninput={(event) =>
-                    setPopupMarkerInput(field, (event.currentTarget as HTMLInputElement).value)}
-                  onkeydown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      insertPopupMarkerFromInput(field);
-                    }
-                  }}
-                  list={`popup-marker-options-${fieldIndex}`}
-                  placeholder="Type marker name (e.g. single-glossary-jmdict)"
-                />
-                <Button
-                  {disabled}
-                  size="xs"
-                  color="alternative"
-                  onclick={() => insertPopupMarkerFromInput(field)}
-                >
-                  Insert
-                </Button>
-                <datalist id={`popup-marker-options-${fieldIndex}`}>
-                  {#each popupFieldMarkers as marker}
-                    <option value={marker}></option>
-                  {/each}
-                </datalist>
-              </div>
-              <div class="mt-2 flex flex-wrap gap-1">
-                {#each popupFieldMarkers as marker}
-                  <button
-                    type="button"
-                    {disabled}
-                    onclick={() => insertPopupMarker(field, marker)}
-                    class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
-                  >
-                    {`{${marker}}`}
-                  </button>
-                {/each}
-              </div>
             </div>
           {/each}
+          <datalist id="popup-marker-options">
+            {#each popupFieldMarkers as marker}
+              <option value={`{${marker}}`}></option>
+            {/each}
+          </datalist>
         </div>
       {/if}
     </div>

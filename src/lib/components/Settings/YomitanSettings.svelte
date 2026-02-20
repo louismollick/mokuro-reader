@@ -245,7 +245,9 @@
     </Toggle>
 
     <div class="flex flex-col gap-2">
-      <label class="text-sm text-gray-300" for="yomitan-dictionary-upload">Upload dictionaries (.zip)</label>
+      <label class="text-sm text-gray-300" for="yomitan-dictionary-upload"
+        >Upload dictionaries (.zip)</label
+      >
       <input
         id="yomitan-dictionary-upload"
         type="file"
@@ -265,7 +267,7 @@
 
     <div class="rounded border border-gray-700 p-3">
       <div class="mb-2 flex items-center justify-between">
-        <h4 class="text-sm font-semibold">Installed dictionaries</h4>
+        <h4 class="text-sm font-semibold text-gray-900 dark:text-white">Installed dictionaries</h4>
         <Button size="xs" color="alternative" onclick={refreshDictionaries} disabled={isRefreshing}
           >Refresh</Button
         >
@@ -279,13 +281,17 @@
         <div class="flex flex-col gap-2">
           {#each preferences as preference, index (preference.title)}
             <div class="rounded border border-gray-700 p-2">
-              <div class="mb-2 text-sm font-medium">{preference.title}</div>
+              <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">
+                {preference.title}
+              </div>
               <div class="flex flex-wrap items-center gap-2">
                 <Toggle
                   checked={preference.enabled}
                   onchange={(event) =>
-                    updatePreference(preference.title, (event.currentTarget as HTMLInputElement).checked)}
-                  >Enabled</Toggle
+                    updatePreference(
+                      preference.title,
+                      (event.currentTarget as HTMLInputElement).checked
+                    )}>Enabled</Toggle
                 >
                 <Button
                   size="xs"
@@ -299,8 +305,11 @@
                   disabled={index === preferences.length - 1}
                   onclick={() => movePreference(index, 1)}>Down</Button
                 >
-                <Button size="xs" color="red" outline onclick={() => handleDeleteDictionary(preference.title)}
-                  >Delete</Button
+                <Button
+                  size="xs"
+                  color="red"
+                  outline
+                  onclick={() => handleDeleteDictionary(preference.title)}>Delete</Button
                 >
               </div>
             </div>
