@@ -63,6 +63,19 @@
 
   // Initialize sync providers on app startup (non-blocking)
   onMount(async () => {
+    if (browser && dev && 'serviceWorker' in navigator) {
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(registrations.map((registration) => registration.unregister()));
+        if ('caches' in window) {
+          const cacheKeys = await caches.keys();
+          await Promise.all(cacheKeys.map((key) => caches.delete(key)));
+        }
+      } catch (error) {
+        console.warn('Failed to clear dev service worker state:', error);
+      }
+    }
+
     // Check if migration is needed first
     if (browser) {
       try {
@@ -86,8 +99,10 @@
     // Initialize file handler for PWA file associations
     initFileHandler();
 
-    // Initialize service worker update detection
-    initSwUpdateDetection();
+    // Initialize service worker update detection only outside development.
+    if (!dev) {
+      initSwUpdateDetection();
+    }
   });
 </script>
 

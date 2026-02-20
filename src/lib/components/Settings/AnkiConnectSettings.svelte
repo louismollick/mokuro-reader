@@ -77,11 +77,13 @@
   async function loadPopupConfig() {
     loadingPopupConfig = true;
     try {
-      const [decks, models, markers] = await Promise.all([
-        getDeckNames(),
-        getModelNames(),
-        getPopupFieldMarkers()
-      ]);
+      const [decks, models] = await Promise.all([getDeckNames(), getModelNames()]);
+      let markers: string[] = [];
+      try {
+        markers = await getPopupFieldMarkers();
+      } catch (error) {
+        console.error('Failed to load popup field markers:', error);
+      }
 
       popupDecks = decks;
       popupModels = models;
@@ -251,7 +253,9 @@
     </div>
     <div class="rounded border border-gray-700 p-3">
       <div class="mb-2 flex items-center justify-between">
-        <h4 class="text-sm font-semibold text-gray-900 dark:text-white">Yomitan Popup Note Mapping</h4>
+        <h4 class="text-sm font-semibold text-gray-900 dark:text-white">
+          Yomitan Popup Note Mapping
+        </h4>
         <Button
           size="xs"
           color="alternative"
@@ -262,7 +266,8 @@
         </Button>
       </div>
       <Helper class="mb-3">
-        Configure deck/model and marker-based field mappings used by “Add to Anki” in the Yomitan popup.
+        Configure deck/model and marker-based field mappings used by “Add to Anki” in the Yomitan
+        popup.
       </Helper>
 
       <div class="mb-3">
@@ -296,7 +301,9 @@
       </div>
 
       {#if popupModelFields.length === 0}
-        <p class="text-xs text-gray-400">No model fields loaded yet. Test connection, then refresh.</p>
+        <p class="text-xs text-gray-400">
+          No model fields loaded yet. Test connection, then refresh.
+        </p>
       {:else}
         <div class="flex flex-col gap-3">
           {#each popupModelFields as field, fieldIndex}

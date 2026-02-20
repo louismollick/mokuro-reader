@@ -19,44 +19,14 @@ export interface YomitanToken {
 
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
 
-const YOMITAN_CORE_INDEX_CANDIDATES = [
-  '/@fs/Users/mollicl/yomitan-core/src/index.ts',
-  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/src/index.ts',
-  '/@id/yomitan-core',
-  '/@fs/Users/mollicl/yomitan-core/dist/index.js',
-  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/dist/index.js'
-];
-
-const YOMITAN_CORE_RENDER_CANDIDATES = [
-  '/@fs/Users/mollicl/yomitan-core/src/render/index.ts',
-  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/src/render/index.ts',
-  '/@id/yomitan-core/render',
-  '/@fs/Users/mollicl/yomitan-core/dist/render.js',
-  '/@fs/Users/mollicl/mokuro-reader/node_modules/yomitan-core/dist/render.js'
-];
-
 let coreInstance: any | null = null;
 
-async function tryImport(specifiers: string[]) {
-  let lastError: unknown = null;
-
-  for (const specifier of specifiers) {
-    try {
-      return await import(/* @vite-ignore */ specifier);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw lastError ?? new Error(`Failed to import module candidates: ${specifiers.join(', ')}`);
-}
-
 async function importCoreIndexModule() {
-  return await tryImport(YOMITAN_CORE_INDEX_CANDIDATES);
+  return await import('yomitan-core');
 }
 
 async function importCoreRenderModule() {
-  return await tryImport(YOMITAN_CORE_RENDER_CANDIDATES);
+  return await import('yomitan-core/render');
 }
 
 async function getCoreInstance() {
@@ -166,7 +136,10 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
   }>;
   logYomitanDebug('core', 'tokenize:parseText-complete', {
     parseResultCount: parsed.length,
-    contentBlockCount: parsed.reduce((total, parseResult) => total + (parseResult.content?.length || 0), 0)
+    contentBlockCount: parsed.reduce(
+      (total, parseResult) => total + (parseResult.content?.length || 0),
+      0
+    )
   });
 
   const tokens: YomitanToken[] = [];
@@ -219,7 +192,10 @@ export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabl
   return result;
 }
 
-export async function renderTermEntriesHtml(entries: unknown[], options?: { showAnkiAddButton?: boolean }) {
+export async function renderTermEntriesHtml(
+  entries: unknown[],
+  options?: { showAnkiAddButton?: boolean }
+) {
   const core = await getCoreInstance();
   const dictionaryInfo = await core.getDictionaryInfo();
 
@@ -237,7 +213,10 @@ export async function renderTermEntriesHtml(entries: unknown[], options?: { show
     DISPLAY_CSS: string;
     NoOpContentManager: new () => unknown;
     applyExtensionDisplayDefaults: (target: HTMLElement) => void;
-    applyPopupTheme: (target: HTMLElement, options?: { theme?: 'light' | 'dark' | 'browser' | 'site' }) => void;
+    applyPopupTheme: (
+      target: HTMLElement,
+      options?: { theme?: 'light' | 'dark' | 'browser' | 'site' }
+    ) => void;
   };
 
   const themeTarget = document.createElement('div');
@@ -271,7 +250,7 @@ export async function renderTermEntriesHtml(entries: unknown[], options?: { show
     container.appendChild(node);
   }
 
-const scrollOverrideCss = `
+  const scrollOverrideCss = `
 html, body {
   height: 100%;
   background-color: #1e1e1e;
@@ -342,7 +321,10 @@ body {
 `;
 
   const htmlDataAttributes = Object.entries(themeTarget.dataset)
-    .map(([key, value]) => `data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${value}"`)
+    .map(
+      ([key, value]) =>
+        `data-${key.replace(/[A-Z]/g, (char) => `-${char.toLowerCase()}`)}="${value}"`
+    )
     .join(' ');
 
   return `<!doctype html><html ${htmlDataAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${DISPLAY_CSS}</style><style>${scrollOverrideCss}</style></head><body><div id="yomitan-scroll-root">${container.innerHTML}</div><script>${heightScript}<\/script></body></html>`;
