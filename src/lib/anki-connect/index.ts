@@ -57,34 +57,12 @@ export type ConnectionTestResult = {
   version?: number;
 };
 
-function isLoopbackHost(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
-  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '[::1]';
-}
-
-function shouldProxyAnkiUrl(url: string): boolean {
-  if (typeof window === 'undefined' || window.location.protocol !== 'https:') return false;
-
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname);
-  } catch {
-    return false;
-  }
-}
-
-function getAnkiRequestUrl(url: string): string {
-  if (!shouldProxyAnkiUrl(url)) return url;
-  return `/api/anki-connect?target=${encodeURIComponent(url)}`;
-}
-
 /**
  * Tests the AnkiConnect connection and returns detailed error information.
  * Uses the "version" action which is a simple ping that returns the API version.
  */
 export async function testConnection(testUrl?: string): Promise<ConnectionTestResult> {
-  const configuredUrl = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
-  const url = getAnkiRequestUrl(configuredUrl);
+  const url = testUrl || get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
 
   try {
     const res = await fetch(url, {
@@ -140,8 +118,7 @@ export async function testConnection(testUrl?: string): Promise<ConnectionTestRe
 }
 
 export async function ankiConnect(action: string, params: Record<string, any>) {
-  const configuredUrl = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
-  const url = getAnkiRequestUrl(configuredUrl);
+  const url = get(settings).ankiConnectSettings.url || 'http://127.0.0.1:8765';
 
   try {
     const res = await fetch(url, {
@@ -182,17 +159,13 @@ export async function getCardInfo(id: string) {
 export async function getDeckNames(): Promise<string[]> {
   const result = await ankiConnect('deckNames', {});
   if (!Array.isArray(result)) return [];
-  return result
-    .filter((name): name is string => typeof name === 'string')
-    .sort((a, b) => a.localeCompare(b));
+  return result.filter((name): name is string => typeof name === 'string').sort((a, b) => a.localeCompare(b));
 }
 
 export async function getModelNames(): Promise<string[]> {
   const result = await ankiConnect('modelNames', {});
   if (!Array.isArray(result)) return [];
-  return result
-    .filter((name): name is string => typeof name === 'string')
-    .sort((a, b) => a.localeCompare(b));
+  return result.filter((name): name is string => typeof name === 'string').sort((a, b) => a.localeCompare(b));
 }
 
 export async function getModelFieldNames(modelName: string): Promise<string[]> {
