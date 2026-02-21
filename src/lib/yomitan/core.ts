@@ -235,7 +235,6 @@ export async function renderTermEntriesHtml(
   for (const [index, entry] of entries.entries()) {
     const node = generator.createTermEntry(entry, dictionaryInfo);
     if (options?.showAnkiAddButton) {
-      node.classList.add('yomitan-entry-with-anki');
       const actionBar = document.createElement('div');
       actionBar.className = 'yomitan-anki-actions';
 
@@ -269,14 +268,9 @@ body {
   background-color: #1e1e1e;
 }
 .yomitan-anki-actions {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 2;
-}
-.yomitan-entry-with-anki {
-  position: relative;
-  padding-top: 40px;
+  margin: 8px 0 12px;
+  display: flex;
+  justify-content: flex-end;
 }
 .yomitan-anki-add {
   border: 1px solid #2f6fed;

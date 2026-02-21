@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Button } from 'flowbite-svelte';
-  import * as Drawer from '$lib/components/shadcn/ui/drawer';
+  import { sineIn, sineOut } from 'svelte/easing';
+  import { fly } from 'svelte/transition';
   import { showSnackbar } from '$lib/util/snackbar';
   import {
     buildEnabledDictionaryMap,
@@ -110,6 +111,12 @@
   function closeDrawer() {
     resetSwipe();
     open = false;
+    onClose?.();
+  }
+
+  function handleBackdropClick() {
+    if (!outsideClose) return;
+    closeDrawer();
   }
 
   function resetDrawerState() {
@@ -198,8 +205,7 @@
     }
 
     if (data.type === 'yomitan-add-note') {
-      const entryIndex =
-        typeof data.entryIndex === 'number' ? data.entryIndex : Number(data.entryIndex);
+      const entryIndex = typeof data.entryIndex === 'number' ? data.entryIndex : Number(data.entryIndex);
       if (!Number.isFinite(entryIndex) || entryIndex < 0 || entryIndex >= lookupEntries.length) {
         return;
       }
@@ -402,14 +408,6 @@
     debugEnabled = isYomitanDebugEnabled();
     loadAndTokenizeText();
   });
-
-  let wasOpen = $state(open);
-  $effect(() => {
-    if (wasOpen && !open) {
-      onClose?.();
-    }
-    wasOpen = open;
-  });
 </script>
 
 <svelte:window
@@ -426,114 +424,127 @@
   }}
 />
 
-<Drawer.Root bind:open dismissible={outsideClose} direction="bottom" modal={true}>
-  <Drawer.Content
-    data-yomitan-drawer
-    overlayClass="!z-[11999] !bg-gray-950/35"
-    class="z-[12000] h-[80vh] w-full max-w-none flex-col overflow-hidden rounded-t-2xl border border-gray-700/80 bg-gray-900 text-white shadow-2xl md:right-auto md:left-3 md:w-1/2 [&>div:first-child]:hidden"
-    style={dragStyle}
-  >
-    <div
-      class="shrink-0"
-      onpointerdown={handleSheetPointerDown}
-      onpointermove={handleSheetPointerMove}
-      onpointerup={completeSwipe}
-      onpointercancel={handleSheetPointerCancel}
-    >
-      <div class="touch-none px-4 pt-1.5 pb-0.5 select-none">
-        <div class="flex justify-center">
-          <div class="h-1.5 w-10 rounded-full bg-gray-600/80"></div>
-        </div>
-      </div>
-      {#if !loading}
-        <section class="max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4 fade-in">
-          {#if errorMessage}
-            <p class="text-sm text-red-300">{errorMessage}</p>
-          {:else}
-            <div class="flex flex-wrap items-end text-gray-100 select-text">
-              {#each tokens as token, index (`token-${index}-${token.text}`)}
-                {#if token.selectable}
-                  <button
-                    type="button"
-                    class={`focus-visible:outline-primary-500 inline appearance-none rounded-sm border-0 bg-transparent px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors select-text hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 ${selectedTokenIndex === index ? 'decoration-primary-400 bg-gray-700/70' : 'decoration-gray-500/70'}`}
-                    onclick={() => handleTokenClick(token, index)}
-                  >
-                    {token.text}
-                  </button>
-                {:else}
-                  <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200"
-                    >{token.text}</span
-                  >
-                {/if}
-              {/each}
-            </div>
-          {/if}
-        </section>
-      {/if}
-    </div>
+{#if open}
+  <div class="fixed inset-0 z-[12000] flex items-end justify-start md:pl-3">
+    <button
+      type="button"
+      aria-label="Close Yomitan popup"
+      class="absolute inset-0 bg-gray-950/35"
+      onclick={handleBackdropClick}
+    ></button>
 
-    <div class="flex min-h-0 flex-1 flex-col bg-gray-900">
-      <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+    <div
+      data-yomitan-drawer
+      class="relative z-10 flex h-[80vh] w-full flex-col overflow-hidden rounded-t-2xl border border-gray-700/80 bg-gray-900 text-white shadow-2xl md:w-1/2"
+      style={dragStyle}
+      in:fly={{
+        y: prefersReducedMotion ? 0 : 56,
+        duration: prefersReducedMotion ? 120 : 200,
+        easing: sineOut,
+        opacity: 1
+      }}
+      out:fly={{
+        y: prefersReducedMotion ? 0 : 56,
+        duration: prefersReducedMotion ? 120 : 200,
+        easing: sineIn,
+        opacity: 1
+      }}
+    >
+      <div
+        class="shrink-0"
+        onpointerdown={handleSheetPointerDown}
+        onpointermove={handleSheetPointerMove}
+        onpointerup={completeSwipe}
+        onpointercancel={handleSheetPointerCancel}
+      >
+        <div class="touch-none select-none px-4 pt-1.5 pb-0.5">
+          <div class="flex justify-center">
+            <div class="h-1.5 w-10 rounded-full bg-gray-600/80"></div>
+          </div>
+        </div>
         {#if !loading}
-          <div class="pointer-events-none absolute top-3 right-3 z-20 flex gap-2 fade-in">
-            {#if addingToAnki}
-              <div
-                class="pointer-events-auto rounded bg-gray-800/90 px-2 py-1 text-xs text-gray-100"
-              >
-                Adding...
+          <section class="fade-in max-h-52 overflow-y-auto border-b border-gray-800 px-4 pt-2 pb-4">
+            {#if errorMessage}
+              <p class="text-sm text-red-300">{errorMessage}</p>
+            {:else}
+              <div class="flex flex-wrap items-end text-gray-100 select-text">
+                {#each tokens as token, index (`token-${index}-${token.text}`)}
+                  {#if token.selectable}
+                    <button
+                      type="button"
+                      class={`inline appearance-none rounded-sm border-0 bg-transparent px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 select-text ${selectedTokenIndex === index ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
+                      onclick={() => handleTokenClick(token, index)}
+                    >
+                      {token.text}
+                    </button>
+                  {:else}
+                    <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span>
+                  {/if}
+                {/each}
               </div>
             {/if}
-            {#if debugEnabled}
+          </section>
+        {/if}
+      </div>
+
+      <div class="min-h-0 flex flex-1 flex-col bg-gray-900">
+        <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+          {#if !loading}
+            <div class="fade-in pointer-events-none absolute top-3 right-3 z-20 flex gap-2">
+              {#if addingToAnki}
+                <div class="pointer-events-auto rounded bg-gray-800/90 px-2 py-1 text-xs text-gray-100">
+                  Adding...
+                </div>
+              {/if}
+              {#if debugEnabled}
+                <Button
+                  outline
+                  color="light"
+                  class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
+                  onclick={copyDebugSnapshot}
+                  >Copy debug snapshot</Button
+                >
+              {/if}
               <Button
                 outline
                 color="light"
                 class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
-                onclick={copyDebugSnapshot}>Copy debug snapshot</Button
+                onclick={closeDrawer}
+                >Close</Button
               >
-            {/if}
-          </div>
-        {/if}
+            </div>
+          {/if}
 
-        <div class="pointer-events-none absolute right-3 bottom-3 z-30 fade-in">
-          <Button
-            outline
-            color="light"
-            class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
-            onclick={closeDrawer}>Close</Button
-          >
-        </div>
+          {#if selectionMessage}
+            <div class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600">
+              {selectionMessage}
+            </div>
+          {:else if noEntries}
+            <div class="flex h-full items-center justify-center text-sm text-gray-600">
+              No dictionary entries found for this token.
+            </div>
+          {:else if lookupHtml}
+            <div class="fade-in h-full overflow-y-auto overflow-x-hidden">
+              <iframe
+                bind:this={lookupFrame}
+                title="Yomitan dictionary results"
+                class="block w-full border-0 bg-[#1e1e1e]"
+                scrolling="yes"
+                style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y; background-color:#1e1e1e;`}
+                srcdoc={lookupHtml}
+                onload={handleLookupFrameLoad}
+              ></iframe>
+            </div>
+          {/if}
 
-        {#if selectionMessage}
-          <div
-            class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600"
-          >
-            {selectionMessage}
-          </div>
-        {:else if noEntries}
-          <div class="flex h-full items-center justify-center text-sm text-gray-600">
-            No dictionary entries found for this token.
-          </div>
-        {:else if lookupHtml}
-          <div class="h-full overflow-x-hidden overflow-y-auto fade-in">
-            <iframe
-              bind:this={lookupFrame}
-              title="Yomitan dictionary results"
-              class="block w-full border-0 bg-[#1e1e1e]"
-              scrolling="yes"
-              style={`height: ${lookupFrameHeight > 0 ? `${lookupFrameHeight}px` : '100%'}; overflow:auto; touch-action: pan-y; background-color:#1e1e1e;`}
-              srcdoc={lookupHtml}
-              onload={handleLookupFrameLoad}
-            ></iframe>
-          </div>
-        {/if}
-
-        {#if lookupLoading}
-          <div class="absolute inset-0 bg-[#1e1e1e]"></div>
-        {/if}
-      </section>
+          {#if lookupLoading}
+            <div class="absolute inset-0 bg-[#1e1e1e]"></div>
+          {/if}
+        </section>
+      </div>
     </div>
-  </Drawer.Content>
-</Drawer.Root>
+  </div>
+{/if}
 
 <style>
   .fade-in {
