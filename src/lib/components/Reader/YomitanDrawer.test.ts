@@ -22,9 +22,13 @@ vi.mock('$lib/yomitan/preferences', () => preferenceMocks);
 describe('YomitanDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    coreMocks.getInstalledDictionaries.mockResolvedValue([{ title: 'JMdict', importDate: Date.now() }]);
+    coreMocks.getInstalledDictionaries.mockResolvedValue([
+      { title: 'JMdict', importDate: Date.now() }
+    ]);
     preferenceMocks.loadDictionaryPreferences.mockReturnValue([{ title: 'JMdict', enabled: true }]);
-    preferenceMocks.normalizeDictionaryPreferences.mockReturnValue([{ title: 'JMdict', enabled: true }]);
+    preferenceMocks.normalizeDictionaryPreferences.mockReturnValue([
+      { title: 'JMdict', enabled: true }
+    ]);
     coreMocks.buildEnabledDictionaryMap.mockReturnValue(
       new Map([['JMdict', { index: 0, priority: 0 }]])
     );
@@ -35,9 +39,11 @@ describe('YomitanDrawer', () => {
       { text: '日本語', reading: 'にほんご', term: '日本語', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
 
-    const { getByText, container } = render(YomitanDrawer, {
+    const { getByText } = render(YomitanDrawer, {
       open: true,
       sourceText: '日本語'
     });
@@ -46,7 +52,7 @@ describe('YomitanDrawer', () => {
     await fireEvent.click(getByText('日本語'));
 
     await waitFor(() => {
-      const iframe = container.querySelector('iframe');
+      const iframe = document.querySelector('iframe');
       expect(iframe).toBeTruthy();
       expect((iframe as HTMLIFrameElement).srcdoc).toContain('result');
     });
@@ -77,22 +83,26 @@ describe('YomitanDrawer', () => {
       { text: '、', reading: '', term: '、', selectable: false, kind: 'other' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
 
-    const { container, getByText, getAllByRole } = render(YomitanDrawer, {
+    const { getByText, getAllByRole } = render(YomitanDrawer, {
       open: true,
       sourceText: '猫、'
     });
 
     await waitFor(() => {
-      const iframe = container.querySelector('iframe');
+      const iframe = document.querySelector('iframe');
       expect(iframe).toBeTruthy();
     });
 
     const punctuation = getByText('、');
     expect(punctuation.tagName.toLowerCase()).toBe('span');
 
-    const wordButtons = getAllByRole('button').filter((button) => button.textContent?.trim() === '猫');
+    const wordButtons = getAllByRole('button').filter(
+      (button) => button.textContent?.trim() === '猫'
+    );
     expect(wordButtons).toHaveLength(1);
   });
 });
