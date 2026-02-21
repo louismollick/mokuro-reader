@@ -16,8 +16,14 @@ const preferenceMocks = vi.hoisted(() => ({
   saveDictionaryPreferences: vi.fn()
 }));
 
+const ankiNoteMocks = vi.hoisted(() => ({
+  addPopupAnkiNote: vi.fn(),
+  getPopupAnkiButtonStates: vi.fn()
+}));
+
 vi.mock('$lib/yomitan/core', () => coreMocks);
 vi.mock('$lib/yomitan/preferences', () => preferenceMocks);
+vi.mock('$lib/yomitan/anki-note', () => ankiNoteMocks);
 
 describe('YomitanDrawer', () => {
   beforeEach(() => {
@@ -32,6 +38,11 @@ describe('YomitanDrawer', () => {
     coreMocks.buildEnabledDictionaryMap.mockReturnValue(
       new Map([['JMdict', { index: 0, priority: 0 }]])
     );
+    ankiNoteMocks.addPopupAnkiNote.mockResolvedValue({ noteId: 123, errors: [] });
+    ankiNoteMocks.getPopupAnkiButtonStates.mockResolvedValue({
+      buttonStates: [],
+      hadConnectionError: false
+    });
   });
 
   it('renders token buttons and dictionary iframe after token click', async () => {
@@ -173,6 +184,156 @@ describe('YomitanDrawer', () => {
     await waitFor(() => {
       expect(coreMocks.lookupTerm).toHaveBeenCalledTimes(2);
       expect(coreMocks.lookupTerm).toHaveBeenLastCalledWith('犬', expect.any(Map));
+    });
+  });
+
+  it('renders checking state first, then duplicate state after precheck', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+
+    let resolvePrecheck: ((value: unknown) => void) | null = null;
+    ankiNoteMocks.getPopupAnkiButtonStates.mockReturnValue(
+      new Promise<unknown>((resolve) => {
+        resolvePrecheck = resolve;
+      })
+    );
+
+    render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫',
+      ankiEnabled: true
+    });
+
+    await waitFor(() => {
+      const hasCheckingState = coreMocks.renderTermEntriesHtml.mock.calls.some(
+        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'checking'
+      );
+      expect(hasCheckingState).toBe(true);
+    });
+
+    if (!resolvePrecheck) {
+      throw new Error('Expected precheck resolver to be set');
+    }
+    (resolvePrecheck as (value: unknown) => void)({
+      buttonStates: [{ state: 'duplicate' }],
+      hadConnectionError: false
+    });
+
+    await waitFor(() => {
+      const hasDuplicateState = coreMocks.renderTermEntriesHtml.mock.calls.some(
+        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'duplicate'
+      );
+      expect(hasDuplicateState).toBe(true);
+    });
+  });
+
+  it('transitions adding to added when Add to Anki succeeds', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+    ankiNoteMocks.getPopupAnkiButtonStates.mockResolvedValue({
+      buttonStates: [{ state: 'ready' }],
+      hadConnectionError: false
+    });
+    ankiNoteMocks.addPopupAnkiNote.mockResolvedValue({ noteId: 42, errors: [] });
+
+    const { container } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫',
+      ankiEnabled: true
+    });
+
+    const iframe = await waitFor(() => {
+      const frame = container.querySelector('iframe');
+      expect(frame).toBeTruthy();
+      return frame as HTMLIFrameElement;
+    });
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'yomitan-add-note', entryIndex: 0 },
+        source: iframe.contentWindow
+      })
+    );
+
+    await waitFor(() => {
+      expect(ankiNoteMocks.addPopupAnkiNote).toHaveBeenCalled();
+      const hasAddingState = coreMocks.renderTermEntriesHtml.mock.calls.some(
+        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'adding'
+      );
+      const hasAddedState = coreMocks.renderTermEntriesHtml.mock.calls.some(
+        ([, options]) => options?.ankiButtonStates?.[0]?.state === 'added'
+      );
+      expect(hasAddingState).toBe(true);
+      expect(hasAddedState).toBe(true);
+    });
+  });
+
+  it('ignores stale precheck results after switching tokens', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' },
+      { text: '犬', reading: 'いぬ', term: '犬', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: [{ id: term }],
+      originalTextLength: 1
+    }));
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+
+    let resolveCat: ((value: unknown) => void) | null = null;
+    let resolveDog: ((value: unknown) => void) | null = null;
+    ankiNoteMocks.getPopupAnkiButtonStates.mockImplementation(
+      async (_entries: unknown[], source: string) => {
+        return await new Promise<unknown>((resolve) => {
+          if (source === '猫') {
+            resolveCat = resolve;
+          } else {
+            resolveDog = resolve;
+          }
+        });
+      }
+    );
+
+    const { getByText } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫犬',
+      ankiEnabled: true
+    });
+
+    await waitFor(() => expect(getByText('犬')).toBeTruthy());
+    await fireEvent.click(getByText('犬'));
+
+    await waitFor(() => expect(ankiNoteMocks.getPopupAnkiButtonStates).toHaveBeenCalledTimes(2));
+    if (!resolveCat || !resolveDog) {
+      throw new Error('Expected precheck resolvers to be set');
+    }
+
+    (resolveCat as (value: unknown) => void)({
+      buttonStates: [{ state: 'duplicate' }],
+      hadConnectionError: false
+    });
+    (resolveDog as (value: unknown) => void)({
+      buttonStates: [{ state: 'ready' }],
+      hadConnectionError: false
+    });
+
+    await waitFor(() => {
+      const lastCall =
+        coreMocks.renderTermEntriesHtml.mock.calls[
+          coreMocks.renderTermEntriesHtml.mock.calls.length - 1
+        ];
+      expect(lastCall?.[1]?.ankiButtonStates?.[0]?.state).toBe('ready');
     });
   });
 

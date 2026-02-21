@@ -17,6 +17,22 @@ export interface YomitanToken {
   kind?: 'word' | 'punct' | 'other';
 }
 
+export type YomitanAnkiButtonState =
+  | 'checking'
+  | 'ready'
+  | 'duplicate'
+  | 'adding'
+  | 'added'
+  | 'error'
+  | 'unknown';
+
+export interface YomitanAnkiButtonUiState {
+  state: YomitanAnkiButtonState;
+  disabled?: boolean;
+  label?: string;
+  title?: string;
+}
+
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
 
 let coreInstance: any | null = null;
@@ -194,7 +210,7 @@ export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabl
 
 export async function renderTermEntriesHtml(
   entries: unknown[],
-  options?: { showAnkiAddButton?: boolean }
+  options?: { showAnkiAddButton?: boolean; ankiButtonStates?: YomitanAnkiButtonUiState[] }
 ) {
   const core = await getCoreInstance();
   const dictionaryInfo = await core.getDictionaryInfo();
@@ -235,15 +251,38 @@ export async function renderTermEntriesHtml(
   for (const [index, entry] of entries.entries()) {
     const node = generator.createTermEntry(entry, dictionaryInfo);
     if (options?.showAnkiAddButton) {
+      const buttonState = options.ankiButtonStates?.[index];
+      const resolvedState = buttonState?.state || 'ready';
+      if (resolvedState === 'checking') {
+        container.appendChild(node);
+        continue;
+      }
+
       node.classList.add('yomitan-entry-with-anki');
       const actionBar = document.createElement('div');
       actionBar.className = 'yomitan-anki-actions';
 
       const button = document.createElement('button');
+      const defaultUi = getDefaultAnkiButtonUiState(resolvedState);
       button.type = 'button';
-      button.className = 'yomitan-anki-add';
+      button.className = `yomitan-anki-add yomitan-anki-add--${resolvedState} yomitan-anki-add--fade-in`;
       button.dataset.entryIndex = `${index}`;
-      button.textContent = 'Add to Anki';
+      button.dataset.state = resolvedState;
+      button.disabled = buttonState?.disabled ?? defaultUi.disabled;
+      button.title = buttonState?.title ?? defaultUi.title;
+
+      const icon = document.createElement('img');
+      icon.className = 'yomitan-anki-icon';
+      icon.src = '/brands/anki.svg';
+      icon.alt = '';
+      icon.setAttribute('aria-hidden', 'true');
+
+      const text = document.createElement('span');
+      text.className = 'yomitan-anki-label';
+      text.textContent = buttonState?.label ?? defaultUi.label;
+
+      button.appendChild(icon);
+      button.appendChild(text);
       actionBar.appendChild(button);
 
       node.appendChild(actionBar);
@@ -252,6 +291,18 @@ export async function renderTermEntriesHtml(
   }
 
   const scrollOverrideCss = `
+:root {
+  --color-primary-600: #ef562f;
+  --color-primary-700: #eb4f27;
+  --color-blue-600: #2563eb;
+  --color-blue-700: #1d4ed8;
+  --color-red-600: #dc2626;
+  --color-red-700: #b91c1c;
+  --color-green-600: #16a34a;
+  --color-gray-300: #d1d5db;
+  --color-gray-600: #4b5563;
+  --color-gray-700: #374151;
+}
 html, body {
   height: 100%;
   background-color: #1e1e1e;
@@ -272,23 +323,87 @@ body {
   position: absolute;
   top: 8px;
   right: 8px;
-  z-index: 2;
+  z-index: 8;
 }
 .yomitan-entry-with-anki {
   position: relative;
-  padding-top: 40px;
 }
 .yomitan-anki-add {
-  border: 1px solid #2f6fed;
-  background: #2f6fed;
+  border: 1px solid var(--color-blue-600);
+  background: var(--color-blue-600);
   color: white;
   border-radius: 6px;
   padding: 6px 10px;
+  min-width: 120px;
   font-size: 12px;
+  font-weight: 600;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
-.yomitan-anki-add:hover {
-  background: #2459be;
+.yomitan-anki-icon {
+  width: 16px;
+  height: 16px;
+  display: inline-block;
+  object-fit: contain;
+}
+.yomitan-anki-add--fade-in {
+  animation: yomitan-anki-fade-in 180ms ease-out;
+}
+.yomitan-anki-add--ready {
+  border-color: var(--color-blue-600);
+  background: var(--color-blue-600);
+}
+.yomitan-anki-add--ready:hover {
+  background: var(--color-blue-700);
+}
+.yomitan-anki-add--duplicate {
+  border-color: var(--color-primary-600);
+  background: var(--color-primary-600);
+}
+.yomitan-anki-add--duplicate:hover {
+  background: var(--color-primary-700);
+}
+.yomitan-anki-add--checking,
+.yomitan-anki-add--adding {
+  border-color: var(--color-gray-600);
+  background: var(--color-gray-700);
+  color: var(--color-gray-300);
+  cursor: wait;
+}
+.yomitan-anki-add--checking:hover,
+.yomitan-anki-add--adding:hover {
+  background: var(--color-gray-700);
+}
+.yomitan-anki-add--added {
+  border-color: var(--color-green-600);
+  background: var(--color-green-600);
+}
+.yomitan-anki-add--added:hover {
+  background: var(--color-green-600);
+}
+.yomitan-anki-add--error {
+  border-color: var(--color-red-600);
+  background: var(--color-red-600);
+}
+.yomitan-anki-add--error:hover {
+  background: var(--color-red-700);
+}
+.yomitan-anki-add--unknown {
+  border-color: var(--color-blue-600);
+  background: var(--color-blue-600);
+}
+.yomitan-anki-add--unknown:hover {
+  background: var(--color-blue-700);
+}
+.yomitan-anki-add:disabled {
+  opacity: 0.95;
+}
+@keyframes yomitan-anki-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 `;
 
@@ -299,6 +414,7 @@ body {
     if (!(target instanceof HTMLElement)) return;
     const button = target.closest('.yomitan-anki-add');
     if (!(button instanceof HTMLElement)) return;
+    if ((button instanceof HTMLButtonElement) && button.disabled) return;
     const entryIndex = Number(button.dataset.entryIndex);
     if (Number.isNaN(entryIndex)) return;
     window.parent?.postMessage({ type: 'yomitan-add-note', entryIndex }, '*');
@@ -338,4 +454,55 @@ body {
 
 export function joinTextBoxLines(lines: string[]) {
   return normalizeSourceText(lines);
+}
+
+function getDefaultAnkiButtonUiState(state: YomitanAnkiButtonState): {
+  label: string;
+  title: string;
+  disabled: boolean;
+} {
+  switch (state) {
+    case 'checking':
+      return {
+        label: 'Checking...',
+        title: 'Checking Anki for duplicates.',
+        disabled: true
+      };
+    case 'ready':
+      return {
+        label: 'Add to Anki',
+        title: 'Add this entry to Anki.',
+        disabled: false
+      };
+    case 'duplicate':
+      return {
+        label: 'Add duplicate',
+        title: 'Already exists in Anki; adding another copy.',
+        disabled: false
+      };
+    case 'adding':
+      return {
+        label: 'Adding...',
+        title: 'Adding this entry to Anki.',
+        disabled: true
+      };
+    case 'added':
+      return {
+        label: 'Added \u2713',
+        title: 'Added to Anki.',
+        disabled: true
+      };
+    case 'error':
+      return {
+        label: 'Retry',
+        title: 'Last add failed; click to retry.',
+        disabled: false
+      };
+    case 'unknown':
+      return {
+        label: 'Add to Anki',
+        title: 'Could not verify duplicates; add may create a duplicate.',
+        disabled: false
+      };
+  }
 }

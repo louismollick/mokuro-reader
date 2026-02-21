@@ -9,6 +9,7 @@
     lookupTerm,
     renderTermEntriesHtml,
     tokenizeText,
+    type YomitanAnkiButtonUiState,
     type YomitanDictionarySummary,
     type YomitanToken
   } from '$lib/yomitan/core';
@@ -24,7 +25,7 @@
     normalizeDictionaryPreferences,
     saveDictionaryPreferences
   } from '$lib/yomitan/preferences';
-  import { addPopupAnkiNote } from '$lib/yomitan/anki-note';
+  import { addPopupAnkiNote, getPopupAnkiButtonStates } from '$lib/yomitan/anki-note';
   import type { VolumeMetadata } from '$lib/anki-connect';
 
   interface Props {
@@ -61,9 +62,12 @@
   let awaitingLookupFrameLoad = $state(false);
   let lookupEntries = $state<unknown[]>([]);
   let selectedTokenText = $state('');
-  let addingToAnki = $state(false);
+  let ankiButtonStates = $state<YomitanAnkiButtonUiState[]>([]);
+  let lookupRequestId = $state(0);
+  let ankiPrecheckWarningShown = $state(false);
   let drawerPanel: HTMLElement | null = $state(null);
   let debugEnabled = $state(false);
+  let addingToAnki = $derived(ankiButtonStates.some((state) => state.state === 'adding'));
   const transitionParams = {
     y: 320,
     duration: 200,
@@ -138,7 +142,9 @@
     lookupFrameHeight = 0;
     lookupEntries = [];
     selectedTokenText = '';
-    addingToAnki = false;
+    ankiButtonStates = [];
+    lookupRequestId = 0;
+    ankiPrecheckWarningShown = false;
   }
 
   function handleIframeMessage(event: MessageEvent) {
@@ -174,21 +180,22 @@
     const entry = lookupEntries[entryIndex];
     if (!entry) return;
 
-    addingToAnki = true;
+    await updateAnkiButtonState(entryIndex, { state: 'adding' });
     try {
       const source = selectedTokenText || sourceText;
       const result = await addPopupAnkiNote(entry, source, volumeMetadata);
       if (result.noteId) {
+        await updateAnkiButtonState(entryIndex, { state: 'added' });
         showSnackbar('Added note to Anki.');
       } else {
+        await updateAnkiButtonState(entryIndex, { state: 'error' });
         showSnackbar('Failed to add note to Anki.');
       }
     } catch (error) {
       console.error('Failed to add Yomitan note to Anki:', error);
+      await updateAnkiButtonState(entryIndex, { state: 'error' });
       const message = error instanceof Error ? error.message : String(error);
       showSnackbar(`Failed to add note: ${message}`);
-    } finally {
-      addingToAnki = false;
     }
   }
 
@@ -286,6 +293,9 @@
     awaitingLookupFrameLoad = false;
     noEntries = false;
     selectionMessage = '';
+    ankiPrecheckWarningShown = false;
+    const currentLookupRequestId = lookupRequestId + 1;
+    lookupRequestId = currentLookupRequestId;
 
     try {
       const normalizedPreferences = normalizeDictionaryPreferences(
@@ -300,6 +310,9 @@
       });
 
       const lookup = await lookupTerm(token.text, enabledMap);
+      if (currentLookupRequestId !== lookupRequestId) {
+        return;
+      }
       selectedTokenText = token.text;
       lookupEntries = lookup.entries;
       debugYomitan('lookup:complete', {
@@ -308,12 +321,23 @@
         originalTextLength: lookup.originalTextLength
       });
       if (!lookup.entries.length) {
+        ankiButtonStates = [];
         noEntries = true;
         return;
       }
 
-      lookupHtml = await renderTermEntriesHtml(lookup.entries, { showAnkiAddButton: ankiEnabled });
+      if (ankiEnabled) {
+        ankiButtonStates = lookup.entries.map(() => ({ state: 'checking' }));
+      } else {
+        ankiButtonStates = [];
+      }
+
+      await rerenderLookupHtml(currentLookupRequestId);
       awaitingLookupFrameLoad = true;
+
+      if (ankiEnabled) {
+        void precheckAnkiButtonStates(currentLookupRequestId, lookup.entries, token.text);
+      }
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
       debugYomitan('lookup:failed', {
@@ -327,6 +351,56 @@
         lookupLoading = false;
       }
     }
+  }
+
+  async function rerenderLookupHtml(requestId: number) {
+    const html = await renderTermEntriesHtml(lookupEntries, {
+      showAnkiAddButton: ankiEnabled,
+      ankiButtonStates: ankiEnabled ? ankiButtonStates : undefined
+    });
+    if (requestId !== lookupRequestId) return;
+    lookupHtml = html;
+  }
+
+  async function precheckAnkiButtonStates(
+    requestId: number,
+    entries: unknown[],
+    tokenText: string
+  ) {
+    try {
+      const source = tokenText || sourceText;
+      const result = await getPopupAnkiButtonStates(entries, source, volumeMetadata);
+      if (requestId !== lookupRequestId) return;
+
+      ankiButtonStates = result.buttonStates;
+      await rerenderLookupHtml(requestId);
+
+      if (result.hadConnectionError && !ankiPrecheckWarningShown) {
+        ankiPrecheckWarningShown = true;
+        showSnackbar('Could not verify duplicates in Anki. You can still add cards.');
+      }
+    } catch (error) {
+      if (requestId !== lookupRequestId) return;
+      console.error('Failed to precheck Yomitan entries in Anki:', error);
+      ankiButtonStates = entries.map(() => ({
+        state: 'unknown',
+        title: 'Could not verify duplicates; add may create a duplicate.'
+      }));
+      await rerenderLookupHtml(requestId);
+      if (!ankiPrecheckWarningShown) {
+        ankiPrecheckWarningShown = true;
+        showSnackbar('Could not verify duplicates in Anki. You can still add cards.');
+      }
+    }
+  }
+
+  async function updateAnkiButtonState(entryIndex: number, nextState: YomitanAnkiButtonUiState) {
+    if (entryIndex < 0 || entryIndex >= ankiButtonStates.length) return;
+    const currentLookupRequestId = lookupRequestId;
+    ankiButtonStates = ankiButtonStates.map((state, index) =>
+      index === entryIndex ? nextState : state
+    );
+    await rerenderLookupHtml(currentLookupRequestId);
   }
 
   function handleLookupFrameLoad() {
