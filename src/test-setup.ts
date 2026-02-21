@@ -69,3 +69,54 @@ class MockWorker {
 
 // @ts-expect-error - Worker type mismatch is expected for mock
 globalThis.Worker = MockWorker;
+
+// Polyfill HTMLDialogElement APIs used by Flowbite Drawer/Dialog in jsdom
+if (typeof HTMLDialogElement !== 'undefined') {
+  if (!HTMLDialogElement.prototype.show) {
+    HTMLDialogElement.prototype.show = function () {
+      this.setAttribute('open', '');
+    };
+  }
+
+  if (!HTMLDialogElement.prototype.showModal) {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '');
+    };
+  }
+
+  if (!HTMLDialogElement.prototype.close) {
+    HTMLDialogElement.prototype.close = function (returnValue?: string) {
+      if (returnValue !== undefined) {
+        this.returnValue = returnValue;
+      }
+      this.removeAttribute('open');
+    };
+  }
+
+  if (!HTMLDialogElement.prototype.requestClose) {
+    HTMLDialogElement.prototype.requestClose = function () {
+      this.dispatchEvent(new Event('cancel', { bubbles: true, cancelable: true }));
+    };
+  }
+}
+
+if (typeof Element !== 'undefined' && !Element.prototype.animate) {
+  Element.prototype.animate = function () {
+    return {
+      finished: Promise.resolve(),
+      cancel: () => {},
+      play: () => {},
+      pause: () => {},
+      reverse: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      onfinish: null,
+      oncancel: null,
+      playState: 'finished',
+      currentTime: 0,
+      effect: null,
+      id: '',
+      timeline: null
+    } as unknown as Animation;
+  };
+}

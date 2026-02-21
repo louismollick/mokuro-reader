@@ -22,9 +22,13 @@ vi.mock('$lib/yomitan/preferences', () => preferenceMocks);
 describe('YomitanDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    coreMocks.getInstalledDictionaries.mockResolvedValue([{ title: 'JMdict', importDate: Date.now() }]);
+    coreMocks.getInstalledDictionaries.mockResolvedValue([
+      { title: 'JMdict', importDate: Date.now() }
+    ]);
     preferenceMocks.loadDictionaryPreferences.mockReturnValue([{ title: 'JMdict', enabled: true }]);
-    preferenceMocks.normalizeDictionaryPreferences.mockReturnValue([{ title: 'JMdict', enabled: true }]);
+    preferenceMocks.normalizeDictionaryPreferences.mockReturnValue([
+      { title: 'JMdict', enabled: true }
+    ]);
     coreMocks.buildEnabledDictionaryMap.mockReturnValue(
       new Map([['JMdict', { index: 0, priority: 0 }]])
     );
@@ -35,7 +39,9 @@ describe('YomitanDrawer', () => {
       { text: '日本語', reading: 'にほんご', term: '日本語', selectable: true, kind: 'word' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
 
     const { getByText, container } = render(YomitanDrawer, {
       open: true,
@@ -77,7 +83,9 @@ describe('YomitanDrawer', () => {
       { text: '、', reading: '', term: '、', selectable: false, kind: 'other' }
     ]);
     coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
-    coreMocks.renderTermEntriesHtml.mockResolvedValue('<html><body><div>result</div></body></html>');
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
 
     const { container, getByText, getAllByRole } = render(YomitanDrawer, {
       open: true,
@@ -92,7 +100,120 @@ describe('YomitanDrawer', () => {
     const punctuation = getByText('、');
     expect(punctuation.tagName.toLowerCase()).toBe('span');
 
-    const wordButtons = getAllByRole('button').filter((button) => button.textContent?.trim() === '猫');
+    const wordButtons = getAllByRole('button').filter(
+      (button) => button.textContent?.trim() === '猫'
+    );
     expect(wordButtons).toHaveLength(1);
+  });
+
+  it('closes from close button and emits onClose once', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+    const onClose = vi.fn();
+
+    const { getByLabelText } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫',
+      onClose
+    });
+
+    await waitFor(() => expect(getByLabelText('Close')).toBeTruthy());
+    await fireEvent.click(getByLabelText('Close'));
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps token taps working', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' },
+      { text: '犬', reading: 'いぬ', term: '犬', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: [{ id: term }],
+      originalTextLength: 1
+    }));
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+
+    const { getByText } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫犬'
+    });
+
+    const secondToken = await waitFor(() => getByText('犬'));
+    await fireEvent.pointerDown(secondToken, {
+      pointerId: 2,
+      clientX: 100,
+      clientY: 100,
+      pointerType: 'touch',
+      isPrimary: true
+    });
+    await fireEvent.pointerMove(secondToken, {
+      pointerId: 2,
+      clientX: 101,
+      clientY: 105,
+      pointerType: 'touch',
+      isPrimary: true
+    });
+    await fireEvent.pointerUp(secondToken, {
+      pointerId: 2,
+      clientX: 101,
+      clientY: 105,
+      pointerType: 'touch',
+      isPrimary: true
+    });
+    await fireEvent.click(secondToken);
+
+    await waitFor(() => {
+      expect(coreMocks.lookupTerm).toHaveBeenCalledTimes(2);
+      expect(coreMocks.lookupTerm).toHaveBeenLastCalledWith('犬', expect.any(Map));
+    });
+  });
+
+  it('respects outsideClose for backdrop interactions', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.renderTermEntriesHtml.mockResolvedValue(
+      '<html><body><div>result</div></body></html>'
+    );
+
+    const onCloseAllowed = vi.fn();
+    const first = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫',
+      outsideClose: true,
+      onClose: onCloseAllowed
+    });
+    await waitFor(() => expect(first.container.querySelector('dialog')).toBeTruthy());
+    await fireEvent.mouseDown(first.container.querySelector('dialog') as HTMLDialogElement, {
+      clientX: 999,
+      clientY: 1
+    });
+    await waitFor(() => expect(onCloseAllowed).toHaveBeenCalledTimes(1));
+
+    first.unmount();
+
+    const onCloseBlocked = vi.fn();
+    const second = render(YomitanDrawer, {
+      open: true,
+      sourceText: '猫',
+      outsideClose: false,
+      onClose: onCloseBlocked
+    });
+    await waitFor(() => expect(second.container.querySelector('dialog')).toBeTruthy());
+    await fireEvent.mouseDown(second.container.querySelector('dialog') as HTMLDialogElement, {
+      clientX: 999,
+      clientY: 1
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(onCloseBlocked).not.toHaveBeenCalled();
   });
 });
