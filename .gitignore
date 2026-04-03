@@ -17,4 +17,3 @@ vite.config.ts.timestamp-*
 *.swp
 *.swo
 *~
-.vercel
