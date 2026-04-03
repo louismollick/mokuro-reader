@@ -62,8 +62,8 @@ export function logYomitanDebug(
 }
 
 export function getCodePointPreview(value: string, limit = 32) {
-  return Array.from(value.slice(0, limit)).map((char) =>
-    `U+${char.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}`
+  return Array.from(value.slice(0, limit)).map(
+    (char) => `U+${char.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}`
   );
 }
 
