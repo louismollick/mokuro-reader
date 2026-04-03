@@ -93,4 +93,3 @@ export function moveDictionaryPreference(
   next.splice(toIndex, 0, item);
   return next;
 }
-

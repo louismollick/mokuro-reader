@@ -56,7 +56,9 @@ describe('YomitanSettings', () => {
       { title: 'JMdict', enabled: true },
       { title: 'KANJIDIC', enabled: true }
     ]);
-    preferenceMocks.normalizeDictionaryPreferences.mockImplementation((_installed, existing) => existing);
+    preferenceMocks.normalizeDictionaryPreferences.mockImplementation(
+      (_installed, existing) => existing
+    );
     coreMocks.importDictionaryZip.mockResolvedValue({});
   });
 
@@ -64,9 +66,7 @@ describe('YomitanSettings', () => {
     const { getByText, container } = render(YomitanSettings);
     await waitFor(() => expect(getByText('Installed dictionaries')).toBeTruthy());
 
-    const checkbox = container.querySelector(
-      'input[type="checkbox"]'
-    ) as HTMLInputElement;
+    const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;
     checkbox.checked = true;
     await fireEvent.change(checkbox);
 

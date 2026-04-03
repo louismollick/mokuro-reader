@@ -40,4 +40,3 @@ describe('moveDictionaryPreference', () => {
     expect(movedUp.map((item) => item.title)).toEqual(['B', 'C', 'A']);
   });
 });
-
