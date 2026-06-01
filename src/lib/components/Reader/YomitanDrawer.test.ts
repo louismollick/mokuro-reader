@@ -2,9 +2,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import YomitanDrawer from './YomitanDrawer.svelte';
 
-const rendererMocks = vi.hoisted(() => ({
+const termRendererMocks = vi.hoisted(() => ({
   prepareHost: vi.fn(),
   renderTermEntries: vi.fn(),
+  updateHost: vi.fn(),
+  destroy: vi.fn()
+}));
+
+const kanjiRendererMocks = vi.hoisted(() => ({
+  prepareHost: vi.fn(),
+  renderKanjiEntries: vi.fn(),
   updateHost: vi.fn(),
   destroy: vi.fn()
 }));
@@ -12,9 +19,12 @@ const rendererMocks = vi.hoisted(() => ({
 const coreMocks = vi.hoisted(() => ({
   getInstalledDictionaries: vi.fn(),
   buildEnabledDictionaryMap: vi.fn(),
+  buildEnabledKanjiDictionaryMap: vi.fn(),
   tokenizeText: vi.fn(),
+  lookupKanji: vi.fn(),
   lookupTerm: vi.fn(),
-  createTermEntryRenderer: vi.fn()
+  createTermEntryRenderer: vi.fn(),
+  createKanjiEntryRenderer: vi.fn()
 }));
 
 const preferenceMocks = vi.hoisted(() => ({
@@ -32,10 +42,19 @@ vi.mock('$lib/yomitan/core', () => coreMocks);
 vi.mock('$lib/yomitan/preferences', () => preferenceMocks);
 vi.mock('$lib/yomitan/anki-note', () => ankiNoteMocks);
 
+function setSelection(node: Node) {
+  const selection = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  document.dispatchEvent(new Event('selectionchange'));
+}
+
 describe('YomitanDrawer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    rendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
       return entries.map((entry, index) => {
         const entryNode = document.createElement('div');
         entryNode.textContent = `entry-${index}`;
@@ -47,17 +66,35 @@ describe('YomitanDrawer', () => {
         };
       });
     });
+    kanjiRendererMocks.renderKanjiEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        entryNode.textContent = `kanji-entry-${index}`;
 
-    coreMocks.createTermEntryRenderer.mockReturnValue(rendererMocks);
+        return {
+          index,
+          entry,
+          entryNode
+        };
+      });
+    });
+
+    coreMocks.createTermEntryRenderer.mockReturnValue(termRendererMocks);
+    coreMocks.createKanjiEntryRenderer.mockReturnValue(kanjiRendererMocks);
     coreMocks.getInstalledDictionaries.mockResolvedValue([
-      { title: 'JMdict', importDate: Date.now() }
+      { title: 'JMdict', importDate: Date.now(), counts: { kanji: { total: 0 } } },
+      { title: 'KANJIDIC', importDate: Date.now(), counts: { kanji: { total: 10 } } }
     ]);
     preferenceMocks.loadDictionaryPreferences.mockReturnValue([{ title: 'JMdict', enabled: true }]);
     preferenceMocks.normalizeDictionaryPreferences.mockReturnValue([
-      { title: 'JMdict', enabled: true }
+      { title: 'JMdict', enabled: true },
+      { title: 'KANJIDIC', enabled: true }
     ]);
     coreMocks.buildEnabledDictionaryMap.mockReturnValue(
       new Map([['JMdict', { index: 0, priority: 0 }]])
+    );
+    coreMocks.buildEnabledKanjiDictionaryMap.mockReturnValue(
+      new Map([['KANJIDIC', { index: 0, alias: 'KANJIDIC' }]])
     );
     ankiNoteMocks.addPopupAnkiNote.mockResolvedValue({ noteId: 123, errors: [] });
     ankiNoteMocks.getPopupAnkiButtonStates.mockResolvedValue({
@@ -82,7 +119,7 @@ describe('YomitanDrawer', () => {
 
     await waitFor(() => {
       expect(coreMocks.createTermEntryRenderer).toHaveBeenCalled();
-      expect(rendererMocks.renderTermEntries).toHaveBeenCalled();
+      expect(termRendererMocks.renderTermEntries).toHaveBeenCalled();
       expect(getByTestId('yomitan-results')).toBeTruthy();
       expect(queryByTitle('Yomitan dictionary results')).toBeNull();
     });
@@ -102,9 +139,7 @@ describe('YomitanDrawer', () => {
     await waitFor(() => expect(getByText('猫')).toBeTruthy());
     await fireEvent.click(getByText('猫'));
 
-    await waitFor(() =>
-      expect(getByText('No dictionary entries found for this token.')).toBeTruthy()
-    );
+    await waitFor(() => expect(getByText('No dictionary entries found for "猫".')).toBeTruthy());
   });
 
   it('renders punctuation tokens as non-clickable text', async () => {
@@ -112,7 +147,10 @@ describe('YomitanDrawer', () => {
       { text: '猫', reading: 'ねこ', term: '猫', selectable: true, kind: 'word' },
       { text: '、', reading: '', term: '、', selectable: false, kind: 'other' }
     ]);
-    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 1 });
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: term === '木' ? [] : [{ id: 1 }],
+      originalTextLength: 1
+    }));
 
     const { getByText, getAllByRole } = render(YomitanDrawer, {
       open: true,
@@ -193,6 +231,136 @@ describe('YomitanDrawer', () => {
     await waitFor(() => {
       expect(coreMocks.lookupTerm).toHaveBeenCalledTimes(2);
       expect(coreMocks.lookupTerm).toHaveBeenLastCalledWith('犬', expect.any(Map));
+    });
+  });
+
+  it('clicks headword kanji to show kanji results and back restores cached term results', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '会う', reading: 'あう', term: '会う', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 2 });
+    coreMocks.lookupKanji.mockResolvedValue([{ character: '会' }]);
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const link = document.createElement('a');
+        link.className = 'headword-kanji-link';
+        link.dataset.character = '会';
+        link.textContent = '会';
+        entryNode.appendChild(link);
+
+        return {
+          index,
+          entry,
+          entryNode
+        };
+      });
+    });
+
+    const { getByText, getByTestId, getByRole, queryByTestId } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '会う'
+    });
+
+    await waitFor(() => expect(getByTestId('yomitan-results')).toBeTruthy());
+    await fireEvent.click(getByText('会'));
+
+    await waitFor(() => {
+      expect(coreMocks.lookupKanji).toHaveBeenCalledWith(
+        '会',
+        new Map([['KANJIDIC', { index: 0, alias: 'KANJIDIC' }]])
+      );
+      expect(getByTestId('yomitan-kanji-results')).toBeTruthy();
+      expect(queryByTestId('yomitan-results')).toBeNull();
+      expect(getByRole('button', { name: 'Back to 会う' })).toBeTruthy();
+    });
+
+    await fireEvent.click(getByRole('button', { name: 'Back to 会う' }));
+
+    await waitFor(() => {
+      expect(getByTestId('yomitan-results')).toBeTruthy();
+      expect(queryByTestId('yomitan-kanji-results')).toBeNull();
+      expect(coreMocks.lookupTerm).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('same-token retap restores cached term results without a new term lookup', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '会う', reading: 'あう', term: '会う', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 2 });
+    coreMocks.lookupKanji.mockResolvedValue([{ character: '会' }]);
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const link = document.createElement('a');
+        link.className = 'headword-kanji-link';
+        link.dataset.character = '会';
+        link.textContent = '会';
+        entryNode.appendChild(link);
+
+        return {
+          index,
+          entry,
+          entryNode
+        };
+      });
+    });
+
+    const { getByText, getByTestId, queryByTestId } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '会う'
+    });
+
+    await waitFor(() => expect(getByTestId('yomitan-results')).toBeTruthy());
+    await fireEvent.click(getByText('会'));
+    await waitFor(() => expect(getByTestId('yomitan-kanji-results')).toBeTruthy());
+
+    await fireEvent.click(getByText('会う'));
+
+    await waitFor(() => {
+      expect(getByTestId('yomitan-results')).toBeTruthy();
+      expect(queryByTestId('yomitan-kanji-results')).toBeNull();
+      expect(coreMocks.lookupTerm).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('keeps term view visible when no enabled kanji dictionaries exist', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '会う', reading: 'あう', term: '会う', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 2 });
+    coreMocks.buildEnabledKanjiDictionaryMap.mockReturnValue(new Map());
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const link = document.createElement('a');
+        link.className = 'headword-kanji-link';
+        link.dataset.character = '会';
+        link.textContent = '会';
+        entryNode.appendChild(link);
+
+        return {
+          index,
+          entry,
+          entryNode
+        };
+      });
+    });
+
+    const { getByText, getByTestId, queryByTestId } = render(YomitanDrawer, {
+      open: true,
+      sourceText: '会う'
+    });
+
+    await waitFor(() => expect(getByTestId('yomitan-results')).toBeTruthy());
+    await fireEvent.click(getByText('会'));
+
+    await waitFor(() => {
+      expect(coreMocks.lookupKanji).not.toHaveBeenCalled();
+      expect(getByText('No enabled kanji dictionaries.')).toBeTruthy();
+      expect(getByTestId('yomitan-results')).toBeTruthy();
+      expect(queryByTestId('yomitan-kanji-results')).toBeNull();
     });
   });
 
@@ -348,5 +516,254 @@ describe('YomitanDrawer', () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(onCloseBlocked).not.toHaveBeenCalled();
+  });
+
+  it('shows selection search for Japanese result-body selections and pushes nested term view', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '学校', reading: 'がっこう', term: '学校', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: [{ id: term }],
+      originalTextLength: term.length
+    }));
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const jp = document.createElement('span');
+        jp.textContent = index === 0 ? '学生' : '別';
+        const en = document.createElement('span');
+        en.textContent = 'student';
+        entryNode.append(jp, en);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '学校'
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('学生'));
+
+    await waitFor(() =>
+      expect(view.getByRole('button', { name: 'Search selection' })).toBeTruthy()
+    );
+    await fireEvent.click(view.getByRole('button', { name: 'Search selection' }));
+
+    await waitFor(() => {
+      expect(coreMocks.lookupTerm).toHaveBeenLastCalledWith('学生', expect.any(Map));
+      expect(view.getByRole('button', { name: 'Back to 学校' })).toBeTruthy();
+    });
+  });
+
+  it('does not show selection search for non-Japanese result selections', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '学校', reading: 'がっこう', term: '学校', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 2 });
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const en = document.createElement('span');
+        en.textContent = index === 0 ? 'student' : 'gloss';
+        entryNode.appendChild(en);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '学校'
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('student'));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(view.queryByRole('button', { name: 'Search selection' })).toBeNull();
+  });
+
+  it('shows selection search for Japanese token-bar selections', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '青', reading: 'あお', term: '青', selectable: true, kind: 'word' },
+      { text: '空', reading: 'そら', term: '空', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: [{ id: term }],
+      originalTextLength: 1
+    }));
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '青空'
+    });
+
+    const token = await waitFor(() => view.getByText('空'));
+    setSelection(token);
+
+    await waitFor(() =>
+      expect(view.getByRole('button', { name: 'Search selection' })).toBeTruthy()
+    );
+  });
+
+  it('falls back to kanji lookup for single-character selection misses', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '森', reading: 'もり', term: '森', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: term === '木' ? [] : [{ id: term }],
+      originalTextLength: 1
+    }));
+    coreMocks.lookupKanji.mockResolvedValue([{ character: '木' }]);
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const jp = document.createElement('span');
+        jp.textContent = index === 0 ? '木' : '森';
+        entryNode.appendChild(jp);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '森'
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('木'));
+    await fireEvent.click(
+      await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+    );
+
+    await waitFor(() => {
+      expect(coreMocks.lookupTerm).toHaveBeenCalledWith('木', expect.any(Map));
+      expect(coreMocks.lookupKanji).toHaveBeenCalledWith(
+        '木',
+        new Map([['KANJIDIC', { index: 0, alias: 'KANJIDIC' }]])
+      );
+      expect(view.getByTestId('yomitan-kanji-results')).toBeTruthy();
+    });
+  });
+
+  it('shows an empty nested view when single-character selection search finds nothing', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '森', reading: 'もり', term: '森', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: term === '木' ? [] : [{ id: 1 }],
+      originalTextLength: 1
+    }));
+    coreMocks.lookupKanji.mockResolvedValue([]);
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const jp = document.createElement('span');
+        jp.textContent = index === 0 ? '木' : '森';
+        entryNode.appendChild(jp);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '森'
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('木'));
+    await fireEvent.click(
+      await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+    );
+
+    await waitFor(() => {
+      expect(view.getByText('No dictionary entries found for "木".')).toBeTruthy();
+      expect(view.queryByTestId('yomitan-results')).toBeNull();
+      expect(view.queryByTestId('yomitan-kanji-results')).toBeNull();
+      expect(view.getByRole('button', { name: 'Back to 森' })).toBeTruthy();
+    });
+  });
+
+  it('shows an empty nested view for kanji-only multi-character selection misses', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '森', reading: 'もり', term: '森', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: term === '森林' ? [] : [{ id: 1 }],
+      originalTextLength: term.length
+    }));
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const jp = document.createElement('span');
+        jp.textContent = index === 0 ? '森林' : '森';
+        entryNode.appendChild(jp);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '森'
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('森林'));
+    await fireEvent.click(
+      await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+    );
+
+    await waitFor(() => {
+      expect(coreMocks.lookupTerm).toHaveBeenCalledWith('森林', expect.any(Map));
+      expect(coreMocks.lookupKanji).not.toHaveBeenCalled();
+      expect(view.getByText('No dictionary entries found for "森林".')).toBeTruthy();
+      expect(view.getByRole('button', { name: 'Back to 森' })).toBeTruthy();
+    });
+  });
+
+  it('uses nested selection query for Anki source text', async () => {
+    coreMocks.tokenizeText.mockResolvedValue([
+      { text: '学校', reading: 'がっこう', term: '学校', selectable: true, kind: 'word' }
+    ]);
+    coreMocks.lookupTerm.mockImplementation(async (term: string) => ({
+      entries: [{ id: term }],
+      originalTextLength: term.length
+    }));
+    ankiNoteMocks.getPopupAnkiButtonStates.mockResolvedValue({
+      buttonStates: [{ state: 'ready' }],
+      hadConnectionError: false
+    });
+    termRendererMocks.renderTermEntries.mockImplementation((entries: unknown[]) => {
+      return entries.map((entry, index) => {
+        const entryNode = document.createElement('div');
+        const jp = document.createElement('span');
+        jp.textContent = index === 0 ? '学生' : '学校';
+        entryNode.appendChild(jp);
+        return { index, entry, entryNode };
+      });
+    });
+
+    const view = render(YomitanDrawer, {
+      open: true,
+      sourceText: '学校',
+      ankiEnabled: true
+    });
+
+    await waitFor(() => expect(view.getByTestId('yomitan-results')).toBeTruthy());
+    setSelection(view.getByText('学生'));
+    await fireEvent.click(
+      await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+    );
+    const addButton = await waitFor(() => view.getByRole('button', { name: 'Add to Anki' }));
+    await fireEvent.click(addButton);
+
+    await waitFor(() => {
+      expect(ankiNoteMocks.addPopupAnkiNote).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: '学生' }),
+        '学生',
+        undefined
+      );
+    });
   });
 });

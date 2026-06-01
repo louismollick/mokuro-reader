@@ -1,9 +1,20 @@
-import type { ParseTextResultItem, Summary, TermDictionaryEntry } from 'yomitan-core';
-import { createTermEntryRenderer as createCoreTermEntryRenderer } from 'yomitan-core/render';
 import type {
+  KanjiDictionaryEntry,
+  ParseTextResultItem,
+  Summary,
+  TermDictionaryEntry
+} from 'yomitan-core';
+import {
+  createKanjiEntryRenderer as createCoreKanjiEntryRenderer,
+  createTermEntryRenderer as createCoreTermEntryRenderer
+} from 'yomitan-core/render';
+import type {
+  KanjiEntryRenderer,
   RenderHostOptions,
+  RenderedKanjiEntry,
   RenderedTermEntry,
   TermEntryRenderer,
+  KanjiEntryRendererCreateOptions,
   PopupTheme,
   TermEntryRendererCreateOptions
 } from 'yomitan-core/render';
@@ -24,10 +35,14 @@ export type YomitanPopupTheme = PopupTheme;
 
 export type YomitanRenderHostOptions = RenderHostOptions;
 export type YomitanRenderedTermEntry = RenderedTermEntry;
+export type YomitanRenderedKanjiEntry = RenderedKanjiEntry;
 export type YomitanTermEntryRenderer = TermEntryRenderer;
+export type YomitanKanjiEntryRenderer = KanjiEntryRenderer;
 export type YomitanTermEntryRendererCreateOptions = TermEntryRendererCreateOptions;
+export type YomitanKanjiEntryRendererCreateOptions = KanjiEntryRendererCreateOptions;
 
 type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
+type SimpleEnabledKanjiDictionaryMap = Map<string, { index: number; alias: string }>;
 
 let coreInstance: any | null = null;
 
@@ -93,6 +108,34 @@ export function buildEnabledDictionaryMap(preferences: DictionaryPreference[]) {
       priority: 0
     });
   });
+
+  return map;
+}
+
+export function buildEnabledKanjiDictionaryMap(
+  preferences: DictionaryPreference[],
+  installedDictionaries: YomitanDictionarySummary[]
+) {
+  const installedDictionaryMap = new Map(
+    installedDictionaries.map((dictionary) => [dictionary.title, dictionary])
+  );
+  const map: SimpleEnabledKanjiDictionaryMap = new Map();
+  let index = 0;
+
+  for (const preference of preferences) {
+    if (!preference.enabled) continue;
+
+    const installedDictionary = installedDictionaryMap.get(preference.title);
+    if (!installedDictionary || (installedDictionary.counts?.kanji?.total ?? 0) <= 0) {
+      continue;
+    }
+
+    map.set(preference.title, {
+      index,
+      alias: preference.title
+    });
+    index += 1;
+  }
 
   return map;
 }
@@ -199,10 +242,27 @@ export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabl
   return result;
 }
 
+export async function lookupKanji(
+  text: string,
+  enabledDictionaryMap: SimpleEnabledKanjiDictionaryMap
+) {
+  const core = await getCoreInstance();
+  return (await core.findKanji(text, {
+    enabledDictionaryMap,
+    removeNonJapaneseCharacters: true
+  })) as KanjiDictionaryEntry[];
+}
+
 export function createTermEntryRenderer(
   options?: YomitanTermEntryRendererCreateOptions
 ): YomitanTermEntryRenderer {
   return createCoreTermEntryRenderer(options);
+}
+
+export function createKanjiEntryRenderer(
+  options?: YomitanKanjiEntryRendererCreateOptions
+): YomitanKanjiEntryRenderer {
+  return createCoreKanjiEntryRenderer(options);
 }
 
 export function joinTextBoxLines(lines: string[]) {
