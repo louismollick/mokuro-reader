@@ -2,11 +2,13 @@
   import { Button, Drawer } from 'flowbite-svelte';
   import { BookOpenSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
-  import type { TermDictionaryEntry } from 'yomitan-core';
+  import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import {
+    buildEnabledKanjiDictionaryMap,
     buildEnabledDictionaryMap,
     getInstalledDictionaries,
+    lookupKanji,
     lookupTerm,
     tokenizeText,
     type YomitanDictionarySummary,
@@ -27,7 +29,10 @@
   } from '$lib/yomitan/preferences';
   import { addPopupAnkiNote, getPopupAnkiButtonStates } from '$lib/yomitan/anki-note';
   import { showSnackbar } from '$lib/util/snackbar';
+  import YomitanKanjiResults from './YomitanKanjiResults.svelte';
   import YomitanResults from './YomitanResults.svelte';
+
+  type ResultMode = 'term' | 'kanji';
 
   interface Props {
     open?: boolean;
@@ -55,14 +60,20 @@
   let loading = $state(false);
   let lookupLoading = $state(false);
   let errorMessage = $state('');
+  let noticeMessage = $state('');
   let noEntries = $state(false);
+  let emptyResultMessage = $state('No dictionary entries found for this token.');
   let selectionMessage = $state('');
-  let lookupEntries = $state<TermDictionaryEntry[]>([]);
+  let resultMode = $state<ResultMode>('term');
+  let termEntries = $state<TermDictionaryEntry[]>([]);
+  let kanjiEntries = $state<KanjiDictionaryEntry[]>([]);
   let selectedTokenText = $state('');
+  let selectedKanjiCharacter = $state('');
   let ankiButtonStates = $state<YomitanAnkiButtonUiState[]>([]);
   let ankiButtonChecked = $state<boolean[]>([]);
   let ankiButtonFadeIn = $state<boolean[]>([]);
   let lookupRequestId = $state(0);
+  let kanjiLookupRequestId = $state(0);
   let ankiPrecheckWarningShown = $state(false);
   let drawerPanel: HTMLElement | null = $state(null);
   let debugEnabled = $state(false);
@@ -88,8 +99,12 @@
           tokenCount: tokens.length,
           selectableCount: tokens.filter((token) => token.selectable).length,
           selectedTokenIndex,
-          lookupEntryCount: lookupEntries.length,
+          resultMode,
+          termEntryCount: termEntries.length,
+          kanjiEntryCount: kanjiEntries.length,
+          selectedKanjiCharacter,
           noEntries,
+          noticeMessage,
           errorMessage,
           sourceTextLength: sourceText.length,
           sourceTextPreview: sourceText.slice(0, 120),
@@ -133,16 +148,22 @@
     tokens = [];
     selectedTokenIndex = null;
     errorMessage = '';
+    noticeMessage = '';
     noEntries = false;
+    emptyResultMessage = 'No dictionary entries found for this token.';
     selectionMessage = '';
     loading = false;
     lookupLoading = false;
-    lookupEntries = [];
+    resultMode = 'term';
+    termEntries = [];
+    kanjiEntries = [];
     selectedTokenText = '';
+    selectedKanjiCharacter = '';
     ankiButtonStates = [];
     ankiButtonChecked = [];
     ankiButtonFadeIn = [];
     lookupRequestId = 0;
+    kanjiLookupRequestId = 0;
     ankiPrecheckWarningShown = false;
   }
 
@@ -152,7 +173,7 @@
       return;
     }
 
-    const entry = lookupEntries[entryIndex];
+    const entry = termEntries[entryIndex];
     if (!entry) return;
 
     await updateAnkiButtonState(entryIndex, { state: 'adding' });
@@ -272,13 +293,27 @@
 
   async function handleTokenClick(token: YomitanToken, index: number) {
     if (!token.selectable) return;
-    if (selectedTokenIndex === index && (lookupEntries.length > 0 || noEntries || lookupLoading)) {
+    if (resultMode === 'kanji' && selectedTokenIndex === index && termEntries.length > 0) {
+      goBackToTermResults();
+      return;
+    }
+    if (
+      resultMode === 'term' &&
+      selectedTokenIndex === index &&
+      (termEntries.length > 0 || noEntries || lookupLoading)
+    ) {
       return;
     }
 
     selectedTokenIndex = index;
+    kanjiLookupRequestId += 1;
     lookupLoading = true;
+    resultMode = 'term';
+    selectedKanjiCharacter = '';
+    kanjiEntries = [];
+    noticeMessage = '';
     noEntries = false;
+    emptyResultMessage = 'No dictionary entries found for this token.';
     selectionMessage = '';
     ankiPrecheckWarningShown = false;
     const currentLookupRequestId = lookupRequestId + 1;
@@ -302,7 +337,7 @@
       }
 
       selectedTokenText = token.text;
-      lookupEntries = lookup.entries;
+      termEntries = lookup.entries;
       debugYomitan('lookup:complete', {
         tokenText: token.text,
         entryCount: lookup.entries.length,
@@ -310,6 +345,7 @@
       });
 
       if (!lookup.entries.length) {
+        termEntries = [];
         ankiButtonStates = [];
         ankiButtonChecked = [];
         ankiButtonFadeIn = [];
@@ -337,7 +373,71 @@
         error: error instanceof Error ? error.message : String(error)
       });
       showSnackbar('Failed to look up token in Yomitan.');
+      termEntries = [];
       noEntries = true;
+    } finally {
+      lookupLoading = false;
+    }
+  }
+
+  function goBackToTermResults() {
+    resultMode = 'term';
+    selectedKanjiCharacter = '';
+    noticeMessage = '';
+    noEntries = false;
+  }
+
+  async function handleKanjiClick(character: string) {
+    const query = character.trim();
+    if (!query || resultMode === 'kanji' || termEntries.length === 0) return;
+
+    lookupLoading = true;
+    noticeMessage = '';
+    noEntries = false;
+    const currentLookupRequestId = kanjiLookupRequestId + 1;
+    kanjiLookupRequestId = currentLookupRequestId;
+
+    try {
+      const normalizedPreferences = normalizeDictionaryPreferences(
+        dictionaries.map((item) => item.title),
+        loadDictionaryPreferences()
+      );
+      const enabledMap = buildEnabledKanjiDictionaryMap(normalizedPreferences, dictionaries);
+      debugYomitan('lookup:kanji-start', {
+        character: query,
+        enabledDictionaryCount: enabledMap.size
+      });
+
+      if (enabledMap.size === 0) {
+        noticeMessage = 'No enabled kanji dictionaries.';
+        return;
+      }
+
+      const entries = await lookupKanji(query, enabledMap);
+      if (currentLookupRequestId !== kanjiLookupRequestId) {
+        return;
+      }
+
+      debugYomitan('lookup:kanji-complete', {
+        character: query,
+        entryCount: entries.length
+      });
+
+      if (entries.length === 0) {
+        noticeMessage = `No kanji dictionary entries found for "${query}".`;
+        return;
+      }
+
+      kanjiEntries = entries;
+      selectedKanjiCharacter = query;
+      resultMode = 'kanji';
+    } catch (error) {
+      console.error('Yomitan kanji lookup failed:', error);
+      debugYomitan('lookup:kanji-failed', {
+        character: query,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      showSnackbar('Failed to look up kanji in Yomitan.');
     } finally {
       lookupLoading = false;
     }
@@ -450,6 +550,9 @@
             <BookOpenSolid class="mr-2.5 h-4 w-4" />Dictionary
           </h2>
         </div>
+        {#if resultMode === 'kanji'}
+          <Button size="xs" color="alternative" onclick={goBackToTermResults}>Back</Button>
+        {/if}
       </div>
       {#if debugEnabled}
         <div class="mb-4 flex justify-end">
@@ -490,6 +593,11 @@
 
     <div class="flex min-h-0 flex-1 flex-col bg-gray-900">
       <section class="relative min-h-0 flex-1 overflow-hidden bg-[#1e1e1e]">
+        {#if noticeMessage}
+          <div class="border-b border-gray-800 px-5 py-3 text-sm text-yellow-200">
+            {noticeMessage}
+          </div>
+        {/if}
         {#if selectionMessage}
           <div
             class="flex h-full items-center justify-center px-5 text-center text-sm text-gray-600"
@@ -498,12 +606,20 @@
           </div>
         {:else if noEntries}
           <div class="flex h-full items-center justify-center text-sm text-gray-600">
-            No dictionary entries found for this token.
+            {emptyResultMessage}
           </div>
-        {:else if lookupEntries.length > 0}
+        {:else if resultMode === 'kanji' && kanjiEntries.length > 0}
+          <div class="fade-in h-full overflow-x-hidden overflow-y-auto">
+            <YomitanKanjiResults
+              entries={kanjiEntries}
+              dictionaryInfo={dictionaries}
+              theme="dark"
+            />
+          </div>
+        {:else if termEntries.length > 0}
           <div class="fade-in h-full overflow-x-hidden overflow-y-auto">
             <YomitanResults
-              entries={lookupEntries}
+              entries={termEntries}
               dictionaryInfo={dictionaries}
               theme="dark"
               {ankiEnabled}
@@ -512,6 +628,9 @@
               {ankiButtonFadeIn}
               onAddToAnki={(entryIndex) => {
                 void handleAddToAnki(entryIndex);
+              }}
+              onKanjiClick={(character) => {
+                void handleKanjiClick(character);
               }}
             />
           </div>

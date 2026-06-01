@@ -25,6 +25,7 @@
     ankiButtonChecked?: boolean[];
     ankiButtonFadeIn?: boolean[];
     onAddToAnki?: (entryIndex: number) => void;
+    onKanjiClick?: (character: string) => void;
   }
 
   let {
@@ -38,7 +39,8 @@
     ankiButtonStates = [],
     ankiButtonChecked = [],
     ankiButtonFadeIn = [],
-    onAddToAnki
+    onAddToAnki,
+    onKanjiClick
   }: Props = $props();
 
   let mountNode: HTMLDivElement | null = $state(null);
@@ -69,6 +71,32 @@
     };
   }
 
+  function handleResultsClick(event: MouseEvent) {
+    const target = event.target;
+    if (!(target instanceof Element) || !mountNode) return;
+
+    const kanjiLink = target.closest('.headword-kanji-link');
+    if (!(kanjiLink instanceof HTMLElement) || !mountNode.contains(kanjiLink)) {
+      return;
+    }
+
+    const character = kanjiLink.dataset.character?.trim() || kanjiLink.textContent?.trim() || '';
+    if (!character) return;
+
+    event.preventDefault();
+    onKanjiClick?.(character);
+  }
+
+  function attachResultsClick(node: HTMLDivElement) {
+    node.addEventListener('click', handleResultsClick);
+
+    return {
+      destroy() {
+        node.removeEventListener('click', handleResultsClick);
+      }
+    };
+  }
+
   $effect(() => {
     if (!mountNode) return;
 
@@ -94,6 +122,7 @@
 
 <div
   bind:this={mountNode}
+  use:attachResultsClick
   class="h-full min-h-0 overflow-x-hidden overflow-y-auto"
   data-testid="yomitan-results"
 >
