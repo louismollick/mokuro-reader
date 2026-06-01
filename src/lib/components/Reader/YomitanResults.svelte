@@ -131,7 +131,7 @@
       {@const entryIndex = renderedEntry.index}
       {@const state = ankiButtonStates[entryIndex]?.state ?? 'ready'}
       {@const ui = resolveAnkiButtonUiState(state)}
-      <div class="relative pt-8">
+      <div class="relative">
         {#if ankiEnabled && ankiButtonChecked[entryIndex]}
           <div class="absolute top-1.5 right-1.5 z-[8]">
             <YomitanAnkiActionButton
