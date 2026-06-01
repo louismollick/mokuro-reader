@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Drawer } from 'flowbite-svelte';
-  import { BookOpenSolid } from 'flowbite-svelte-icons';
+  import { ArrowLeftOutline, BookOpenSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
   import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
@@ -542,7 +542,7 @@
       aria-label="Yomitan token bar"
       class="shrink-0 border-b border-gray-800 px-4 pt-4 pb-5"
     >
-      <div class="mb-4 flex items-center justify-between gap-2">
+      <div class="mb-4 flex items-center gap-2">
         <div class="flex min-w-0 items-center gap-2">
           <h2
             class="inline-flex items-center text-base font-semibold text-gray-900 dark:text-white"
@@ -550,9 +550,6 @@
             <BookOpenSolid class="mr-2.5 h-4 w-4" />Dictionary
           </h2>
         </div>
-        {#if resultMode === 'kanji'}
-          <Button size="xs" color="alternative" onclick={goBackToTermResults}>Back</Button>
-        {/if}
       </div>
       {#if debugEnabled}
         <div class="mb-4 flex justify-end">
@@ -596,6 +593,19 @@
         {#if noticeMessage}
           <div class="border-b border-gray-800 px-5 py-3 text-sm text-yellow-200">
             {noticeMessage}
+          </div>
+        {/if}
+        {#if resultMode === 'kanji'}
+          <div class="border-b border-gray-800 px-5 py-3">
+            <Button
+              size="xs"
+              color="alternative"
+              pill
+              aria-label="Back to term results"
+              onclick={goBackToTermResults}
+            >
+              <ArrowLeftOutline class="h-3.5 w-3.5" />
+            </Button>
           </div>
         {/if}
         {#if selectionMessage}

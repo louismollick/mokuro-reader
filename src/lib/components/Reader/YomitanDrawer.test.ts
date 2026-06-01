@@ -262,10 +262,10 @@ describe('YomitanDrawer', () => {
       );
       expect(getByTestId('yomitan-kanji-results')).toBeTruthy();
       expect(queryByTestId('yomitan-results')).toBeNull();
-      expect(getByRole('button', { name: 'Back' })).toBeTruthy();
+      expect(getByRole('button', { name: 'Back to term results' })).toBeTruthy();
     });
 
-    await fireEvent.click(getByRole('button', { name: 'Back' }));
+    await fireEvent.click(getByRole('button', { name: 'Back to term results' }));
 
     await waitFor(() => {
       expect(getByTestId('yomitan-results')).toBeTruthy();
