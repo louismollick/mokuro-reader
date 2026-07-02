@@ -9,6 +9,7 @@
   import ReaderSettings from './Reader/ReaderSettings.svelte';
   import Profiles from './Profiles/Profiles.svelte';
   import CatalogSettings from './CatalogSettings.svelte';
+  import YomitanSettings from './YomitanSettings.svelte';
   import Stats from './Stats.svelte';
   import VolumeDefaults from './Volume/VolumeDefaults.svelte';
   import About from './About.svelte';
@@ -92,6 +93,7 @@
       {/if}
       <Profiles {onClose} />
       <AnkiConnectSettings />
+      <YomitanSettings />
       <CatalogSettings />
       <AppearanceSettings />
       <Stats />

@@ -11,92 +11,209 @@
     Select,
     Toggle
   } from 'flowbite-svelte';
-  import { fetchConnectionData, openConfigureModal } from '$lib/anki-connect';
+  import {
+    DYNAMIC_TAGS,
+    fetchConnectionData,
+    getDeckNames,
+    getModelFieldNames,
+    getModelNames,
+    openConfigureModal
+  } from '$lib/anki-connect';
+  import { getPopupFieldMarkers } from '$lib/yomitan/anki-note';
   import { onMount } from 'svelte';
 
-  // Connection state
   let connectionData = $derived($settings.ankiConnectSettings.connectionData);
   let isConnected = $derived(connectionData?.connected ?? false);
   let isConnecting = $state(false);
 
-  // Basic settings
   let url = $state($settings.ankiConnectSettings.url);
-
-  // Card settings
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
   let selectedModel = $state($settings.ankiConnectSettings.selectedModel);
-
-  // Image quality settings
   let heightField = $state($settings.ankiConnectSettings.heightField);
   let widthField = $state($settings.ankiConnectSettings.widthField);
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
+  let cropImage = $state($settings.ankiConnectSettings.cropImage);
+  let ankiTags = $state($settings.ankiConnectSettings.tags);
+  let popupDeckName = $state($settings.ankiConnectSettings.popupDeckName);
+  let popupModelName = $state($settings.ankiConnectSettings.popupModelName);
+  let popupFieldMappings = $state({ ...$settings.ankiConnectSettings.popupFieldMappings });
+  let popupDecks = $state<string[]>([]);
+  let popupModels = $state<string[]>([]);
+  let popupModelFields = $state<string[]>([]);
+  let popupFieldMarkers = $state<string[]>([]);
+  let loadingPopupConfig = $state(false);
 
-  // Trigger settings
   let doubleTapEnabled = $state(
     $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
 
-  // Get configured models for update mode (only shown in update mode)
   let configuredModels = $derived.by(() => {
     const ankiSettings = $settings.ankiConnectSettings;
     return Object.keys(ankiSettings.updateModelConfigs || {});
   });
 
-  // Check if current model has a config for create mode (only shown in create mode)
   let hasCurrentModelConfig = $derived.by(() => {
     const ankiSettings = $settings.ankiConnectSettings;
     return !!(ankiSettings.createModelConfigs && ankiSettings.createModelConfigs[selectedModel]);
   });
 
-  // Available models from connection data
   let availableModels = $derived(connectionData?.models ?? []);
-
-  // Model options for Select component
-  let modelOptions = $derived(availableModels.map((m) => ({ value: m, name: m })));
-
-  // Controls disabled state - disabled when not connected
+  let modelOptions = $derived(availableModels.map((model) => ({ value: model, name: model })));
+  let popupDeckOptions = $derived(popupDecks.map((deck) => ({ value: deck, name: deck })));
+  let popupModelOptions = $derived(popupModels.map((model) => ({ value: model, name: model })));
+  let popupMappingButtonLabel = $derived(
+    popupModelName.trim().toLowerCase() === 'lapis'
+      ? 'Use recommended Lapis mapping'
+      : 'Use default mapping'
+  );
   let disabled = $derived(!isConnected);
 
-  // Connect to AnkiConnect
   async function handleConnect() {
     isConnecting = true;
     try {
       const data = await fetchConnectionData(url || undefined);
-      if (data) {
-        updateAnkiSetting('connectionData', data);
-        updateAnkiSetting('enabled', true); // Enable when connected
-        // Auto-select first model if none selected
-        if (!selectedModel && data.models.length > 0) {
-          selectedModel = data.models[0];
-          updateAnkiSetting('selectedModel', selectedModel);
-        }
+      if (!data) return;
+
+      updateAnkiSetting('connectionData', data);
+      updateAnkiSetting('enabled', true);
+
+      if (!selectedModel && data.models.length > 0) {
+        selectedModel = data.models[0];
+        updateAnkiSetting('selectedModel', selectedModel);
       }
+
+      await loadPopupConfig();
     } finally {
       isConnecting = false;
     }
   }
 
-  // Disconnect from AnkiConnect
   function handleDisconnect() {
     updateAnkiSetting('connectionData', null);
-    updateAnkiSetting('enabled', false); // Disable when disconnected
+    updateAnkiSetting('enabled', false);
+    popupDecks = [];
+    popupModels = [];
+    popupModelFields = [];
   }
 
-  // Update double-tap trigger method
   function updateDoubleTap(enabled: boolean) {
     updateAnkiSetting('triggerMethod', enabled ? 'doubleTap' : 'neither');
   }
 
-  // Handle model change
   function handleModelChange() {
     updateAnkiSetting('selectedModel', selectedModel);
   }
 
-  // Try auto-connect on mount if we have a URL and were previously connected
+  async function loadPopupConfig() {
+    loadingPopupConfig = true;
+    try {
+      const [decks, models, markers] = await Promise.all([
+        getDeckNames(),
+        getModelNames(),
+        getPopupFieldMarkers().catch(() => [])
+      ]);
+
+      popupDecks = decks;
+      popupModels = models;
+      popupFieldMarkers = markers;
+
+      if (!popupDeckName && decks.length > 0) {
+        popupDeckName = decks[0];
+        updateAnkiSetting('popupDeckName', popupDeckName);
+      }
+
+      if (!popupModelName && models.length > 0) {
+        popupModelName = models[0];
+        updateAnkiSetting('popupModelName', popupModelName);
+      }
+
+      if (popupModelName) {
+        await loadPopupModelFields(popupModelName);
+      }
+    } finally {
+      loadingPopupConfig = false;
+    }
+  }
+
+  async function loadPopupModelFields(modelName: string) {
+    popupModelFields = await getModelFieldNames(modelName);
+    const merged = { ...popupFieldMappings };
+    for (const field of popupModelFields) {
+      if (typeof merged[field] !== 'string') {
+        merged[field] = '';
+      }
+    }
+    popupFieldMappings = merged;
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+  }
+
+  async function onPopupModelChange() {
+    updateAnkiSetting('popupModelName', popupModelName);
+    if (!popupModelName) return;
+    await loadPopupModelFields(popupModelName);
+  }
+
+  function updatePopupFieldMapping(field: string, value: string) {
+    popupFieldMappings = {
+      ...popupFieldMappings,
+      [field]: value
+    };
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+  }
+
+  function applyRecommendedPopupMappings() {
+    const next = { ...popupFieldMappings };
+    const findField = (name: string) =>
+      popupModelFields.find((field) => field.toLowerCase() === name.toLowerCase()) ||
+      popupModelFields.find((field) => field.toLowerCase().includes(name.toLowerCase()));
+
+    if (popupModelName.trim().toLowerCase() === 'lapis') {
+      const lapisMappings: Array<[string, string]> = [
+        ['Expression', '{expression}'],
+        ['ExpressionFurigana', '{furigana-plain}'],
+        ['ExpressionReading', '{reading}'],
+        ['ExpressionAudio', '{audio}'],
+        ['SelectionText', '{popup-selection-text}'],
+        ['Sentence', '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}'],
+        ['Glossary', '{glossary}'],
+        ['PitchPosition', '{pitch-accent-positions}'],
+        ['PitchCategories', '{pitch-accent-categories}'],
+        ['Frequency', '{frequencies}'],
+        ['FreqSort', '{frequency-harmonic-rank}'],
+        ['MiscInfo', '{document-title}']
+      ];
+
+      for (const [fieldName, value] of lapisMappings) {
+        const field = findField(fieldName);
+        if (field) next[field] = value;
+      }
+    } else {
+      const expressionField = findField('expression') || popupModelFields[0];
+      const readingField = findField('reading');
+      const glossaryField = findField('definition') || findField('glossary');
+      const sentenceField = findField('sentence');
+
+      if (expressionField) next[expressionField] = '{expression}';
+      if (readingField) next[readingField] = '{reading}';
+      if (glossaryField) next[glossaryField] = '{glossary}';
+      if (sentenceField) next[sentenceField] = '{sentence}';
+    }
+
+    popupFieldMappings = next;
+    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+  }
+
+  function insertTag(tag: string) {
+    ankiTags = ankiTags ? `${ankiTags} ${tag}`.trim() : tag;
+    updateAnkiSetting('tags', ankiTags);
+  }
+
   onMount(() => {
     if (url && !connectionData && $settings.ankiConnectSettings.enabled) {
-      handleConnect();
+      void handleConnect();
+    } else if ($settings.ankiConnectSettings.enabled) {
+      void loadPopupConfig();
     }
   });
 </script>
@@ -104,14 +221,12 @@
 <AccordionItem>
   {#snippet header()}Anki Connect{/snippet}
   <div class="flex flex-col gap-5">
-    <!-- Setup Instructions -->
     <Helper>
       To use AnkiConnect integration, add this reader (<code class="text-primary-500"
         >{$page.url.origin}</code
       >) to your AnkiConnect <b class="text-primary-500">webCorsOriginList</b> setting.
     </Helper>
 
-    <!-- Connection Section -->
     <div>
       <Label class="text-gray-900 dark:text-white">AnkiConnect URL:</Label>
       <div class="flex gap-2">
@@ -121,10 +236,12 @@
           bind:value={url}
           onchange={() => {
             updateAnkiSetting('url', url);
-            // Clear connection data when URL changes
             if (isConnected) {
               updateAnkiSetting('connectionData', null);
             }
+            popupDecks = [];
+            popupModels = [];
+            popupModelFields = [];
           }}
           class="flex-1"
         />
@@ -155,7 +272,6 @@
         {/if}
       </div>
 
-      <!-- Connection Status -->
       {#if isConnected}
         <div
           class="mt-2 rounded bg-green-100 p-2 text-sm text-green-800 dark:bg-green-900 dark:text-green-200"
@@ -168,9 +284,85 @@
       {/if}
     </div>
 
-    <!-- Card Mode (only when connected) -->
     {#if isConnected}
-      <!-- Card Mode -->
+      <div class="rounded border border-gray-200 p-3 dark:border-gray-700">
+        <div class="mb-2 flex items-center justify-between">
+          <h4 class="text-sm font-semibold text-gray-900 dark:text-white">
+            Yomitan Popup Note Mapping
+          </h4>
+          <Button
+            size="xs"
+            color="alternative"
+            onclick={loadPopupConfig}
+            disabled={disabled || loadingPopupConfig}
+          >
+            {loadingPopupConfig ? 'Loading...' : 'Refresh'}
+          </Button>
+        </div>
+        <Helper class="mb-3">
+          Configure deck, note type, and field mappings used by the Yomitan popup Add to Anki
+          action.
+        </Helper>
+
+        <div class="mb-3">
+          <Label class="text-gray-900 dark:text-white">
+            Popup deck:
+            <Select
+              {disabled}
+              items={popupDeckOptions}
+              bind:value={popupDeckName}
+              onchange={() => updateAnkiSetting('popupDeckName', popupDeckName)}
+            />
+          </Label>
+        </div>
+
+        <div class="mb-3">
+          <Label class="text-gray-900 dark:text-white">
+            Popup note type:
+            <Select
+              {disabled}
+              items={popupModelOptions}
+              bind:value={popupModelName}
+              onchange={onPopupModelChange}
+            />
+          </Label>
+        </div>
+
+        <div class="mb-3">
+          <Button {disabled} size="xs" color="alternative" onclick={applyRecommendedPopupMappings}>
+            {popupMappingButtonLabel}
+          </Button>
+        </div>
+
+        {#if popupModelFields.length === 0}
+          <p class="text-xs text-gray-400">
+            No popup fields loaded yet. Connect to AnkiConnect and refresh.
+          </p>
+        {:else}
+          <div class="flex flex-col gap-3">
+            {#each popupModelFields as field}
+              <div class="rounded border border-gray-200 p-2 dark:border-gray-700">
+                <Label class="mb-1 text-gray-900 dark:text-white">{field}</Label>
+                <Input
+                  {disabled}
+                  type="text"
+                  value={popupFieldMappings[field] || ''}
+                  onchange={(event) =>
+                    updatePopupFieldMapping(field, (event.currentTarget as HTMLInputElement).value)}
+                  list="popup-marker-options"
+                  placeholder={'{expression}'}
+                />
+              </div>
+            {/each}
+            <datalist id="popup-marker-options">
+              {#each popupFieldMarkers as marker}
+                <option value={`{${marker}}`}></option>
+              {/each}
+            </datalist>
+          </div>
+        {/if}
+      </div>
+
       <div>
         <Label class="mb-2 text-gray-900 dark:text-white">Card Mode:</Label>
         <div class="flex flex-wrap gap-4">
@@ -202,7 +394,6 @@
         </Helper>
       </div>
 
-      <!-- Create Mode: Note Type Selection + Configure -->
       {#if cardMode === 'create'}
         <div>
           <Label class="text-gray-900 dark:text-white">Note Type:</Label>
@@ -231,15 +422,14 @@
         </div>
       {/if}
 
-      <!-- Update Mode: Configured Models List -->
       {#if cardMode === 'update'}
         <hr />
         <div>
           <h4 class="mb-2 text-gray-900 dark:text-white">Update Mode Configurations</h4>
-          <Helper class="mb-2"
-            >Configure how each note type is updated. The note type is detected from the card being
-            updated.</Helper
-          >
+          <Helper class="mb-2">
+            Configure how each note type is updated. The note type is detected from the card being
+            updated.
+          </Helper>
 
           {#if configuredModels.length > 0}
             <div class="space-y-1">
@@ -269,7 +459,6 @@
         </div>
       {/if}
 
-      <!-- Trigger Settings -->
       <hr />
       <h4 class="text-gray-900 dark:text-white">Trigger Settings</h4>
       <div>
@@ -280,12 +469,48 @@
         >
           Double-tap to capture
         </Toggle>
+        <Helper class="mt-1">
+          Right-click (long press on mobile) any text box for more options
+        </Helper>
+      </div>
+
+      <div>
+        <Toggle
+          {disabled}
+          bind:checked={cropImage}
+          onchange={() => updateAnkiSetting('cropImage', cropImage)}
+        >
+          Preset crop to text box
+        </Toggle>
+        <Helper class="mt-1">Applies to quick captures and the Anki capture modal.</Helper>
+      </div>
+
+      <div>
+        <Label class="text-gray-900 dark:text-white">Tags:</Label>
+        <Input
+          {disabled}
+          type="text"
+          bind:value={ankiTags}
+          onchange={() => updateAnkiSetting('tags', ankiTags)}
+        />
+        <div class="mt-2 flex flex-wrap gap-2">
+          {#each DYNAMIC_TAGS as { tag, description }}
+            <button
+              type="button"
+              {disabled}
+              onclick={() => insertTag(tag)}
+              class="inline-flex items-center rounded bg-gray-100 px-2 py-1 text-xs text-gray-700 hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600"
+              title={description}
+            >
+              {tag}
+            </button>
+          {/each}
+        </div>
         <Helper class="mt-1"
-          >Right-click (long press on mobile) any text box for more options</Helper
+          >Global tag template used by capture flows that do not override tags.</Helper
         >
       </div>
 
-      <!-- Image Quality Settings -->
       <hr />
       <h4 class="text-gray-900 dark:text-white">Image Quality</h4>
       <Helper>Customize the image size and quality stored in Anki</Helper>
@@ -328,7 +553,6 @@
         />
       </div>
     {:else}
-      <!-- Not Connected State -->
       <div
         class="rounded border border-gray-200 bg-gray-50 p-4 text-center text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
       >

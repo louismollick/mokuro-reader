@@ -95,6 +95,12 @@ export type AnkiConnectSettings = {
 
   // Tags (desktop only, not supported on Android)
   tags: string;
+
+  // Yomitan popup note settings
+  popupDeckName: string;
+  popupModelName: string;
+  popupFieldMappings: Record<string, string>;
+  popupDuplicateBehavior: 'new';
 };
 
 export type TimeSchedule = {
@@ -128,6 +134,7 @@ export type CatalogSettings = {
 
 export type Settings = {
   defaultFullscreen: boolean;
+  yomitanPopupOnTextBoxTap: boolean;
   textEditable: boolean;
   textBoxBorders: boolean;
   displayOCR: boolean;
@@ -253,6 +260,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, Omit<ModelConfig, 'modelName'
 
 const defaultSettings: Settings = {
   defaultFullscreen: false,
+  yomitanPopupOnTextBoxTap: false,
   displayOCR: true,
   alwaysShowOCR: false,
   textEditable: false,
@@ -333,7 +341,11 @@ const defaultSettings: Settings = {
     triggerMethod: 'both',
     cardMode: 'create',
     quickCapture: false,
-    tags: ''
+    tags: '{series}',
+    popupDeckName: 'Default',
+    popupModelName: 'Basic',
+    popupFieldMappings: {},
+    popupDuplicateBehavior: 'new'
   },
   catalogSettings: {
     stackingPreset: 'default',
@@ -395,6 +407,9 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...profile
     };
 
+    migratedProfile.yomitanPopupOnTextBoxTap =
+      profile.yomitanPopupOnTextBoxTap ?? defaultSettings.yomitanPopupOnTextBoxTap;
+
     // Ensure nested objects are properly merged (not replaced)
     migratedProfile.volumeDefaults = {
       ...defaultSettings.volumeDefaults,
@@ -448,7 +463,13 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       triggerMethod: oldAnki.triggerMethod || defaultSettings.ankiConnectSettings.triggerMethod,
       cardMode: oldAnki.cardMode || defaultSettings.ankiConnectSettings.cardMode,
       quickCapture: oldAnki.quickCapture ?? defaultSettings.ankiConnectSettings.quickCapture,
-      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags
+      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags,
+      popupDeckName: oldAnki.popupDeckName || defaultSettings.ankiConnectSettings.popupDeckName,
+      popupModelName: oldAnki.popupModelName || defaultSettings.ankiConnectSettings.popupModelName,
+      popupFieldMappings:
+        oldAnki.popupFieldMappings || defaultSettings.ankiConnectSettings.popupFieldMappings,
+      popupDuplicateBehavior:
+        oldAnki.popupDuplicateBehavior || defaultSettings.ankiConnectSettings.popupDuplicateBehavior
     };
 
     migratedProfile.nightModeSchedule = {

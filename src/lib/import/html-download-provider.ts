@@ -3,6 +3,7 @@ import { IMAGE_EXTENSIONS } from './types';
 import { normalizeFilename } from '$lib/util';
 import { getFileProcessingPool } from '$lib/util/file-processing-pool';
 import { generateUUID } from '$lib/util/uuid';
+import { buildHtmlDownloadProxyUrl } from './download-proxy';
 
 export type HtmlImportType = 'directory' | 'cbz';
 
@@ -32,7 +33,7 @@ async function fetchBlobWithProgress(
   url: string,
   onProgress?: (loaded: number, total: number | null) => void
 ): Promise<{ response: Response; blob: Blob }> {
-  const response = await fetch(url, { cache: 'no-store' });
+  const response = await fetch(buildHtmlDownloadProxyUrl(url), { cache: 'no-store' });
   if (!response.ok) {
     throw new Error(`Failed to fetch: ${response.status}`);
   }
@@ -237,7 +238,9 @@ async function tryFetchMokuroSidecar(
       'Checking OCR sidecar (.mokuro)...',
       72 + Math.round((checked / totalCandidates) * 10)
     );
-    const response = await fetch(`${volumeBaseUrl}.mokuro`, { cache: 'no-store' });
+    const response = await fetch(buildHtmlDownloadProxyUrl(`${volumeBaseUrl}.mokuro`), {
+      cache: 'no-store'
+    });
     checked++;
     if (response.ok) {
       const blob = await response.blob();
@@ -253,7 +256,9 @@ async function tryFetchMokuroSidecar(
       'Checking OCR sidecar (.mokuro.gz)...',
       72 + Math.round((checked / totalCandidates) * 10)
     );
-    const gzResponse = await fetch(`${volumeBaseUrl}.mokuro.gz`, { cache: 'no-store' });
+    const gzResponse = await fetch(buildHtmlDownloadProxyUrl(`${volumeBaseUrl}.mokuro.gz`), {
+      cache: 'no-store'
+    });
     checked++;
     if (!gzResponse.ok || typeof DecompressionStream === 'undefined') {
       continue;
@@ -316,7 +321,7 @@ async function tryFetchCoverSidecar(
       84 + Math.round((index / Math.max(candidateUrls.length, 1)) * 10)
     );
     console.log('[HTML Download] Trying thumbnail sidecar:', coverUrl);
-    const response = await fetch(coverUrl, { cache: 'no-store' });
+    const response = await fetch(buildHtmlDownloadProxyUrl(coverUrl), { cache: 'no-store' });
     if (!response.ok) {
       console.log('[HTML Download] Thumbnail sidecar not found:', coverUrl, response.status);
       continue;
@@ -373,10 +378,10 @@ class HtmlDownloadPseudoProvider {
 
       onProgress?.({ status: 'Downloading via worker...', progress: 5 });
       const bundle = await downloadCbzBundleViaWorker(
-        cbzTarget,
+        buildHtmlDownloadProxyUrl(cbzTarget),
         normalizedVolume,
-        mokuroUrls,
-        coverUrls,
+        mokuroUrls.map((url) => buildHtmlDownloadProxyUrl(url)),
+        coverUrls.map((url) => buildHtmlDownloadProxyUrl(url)),
         onProgress
       );
       importFiles.push(bundle.archiveFile);
@@ -419,7 +424,9 @@ class HtmlDownloadPseudoProvider {
 
     onProgress?.({ status: 'Fetching image list...', progress: 5 });
 
-    const directoryRes = await fetch(`${volumeBaseUrl}/`);
+    const directoryRes = await fetch(buildHtmlDownloadProxyUrl(`${volumeBaseUrl}/`), {
+      cache: 'no-store'
+    });
     if (!directoryRes.ok) {
       throw new Error(`Failed to fetch directory: ${directoryRes.status}`);
     }
@@ -440,7 +447,9 @@ class HtmlDownloadPseudoProvider {
     });
 
     for (const item of imageItems) {
-      const image = await fetch(volumeBaseUrl + item.pathname);
+      const image = await fetch(buildHtmlDownloadProxyUrl(volumeBaseUrl + item.pathname), {
+        cache: 'no-store'
+      });
       if (!image.ok) {
         completed++;
         continue;

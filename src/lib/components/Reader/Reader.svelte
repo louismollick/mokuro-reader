@@ -56,6 +56,9 @@
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
+  import YomitanDrawer from './YomitanDrawer.svelte';
+  import { logYomitanDebug } from '$lib/yomitan/debug';
+  import { joinTextBoxLines } from '$lib/yomitan/core';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -718,6 +721,8 @@
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
+  let showYomitanDrawer = $state(false);
+  let yomitanSourceText = $state('');
 
   // Extract image URL from an element by traversing up to find background-image
   function extractImageUrlFromElement(element: HTMLElement | null): string | null {
@@ -751,6 +756,25 @@
       pageIndex
     };
     showContextMenu = true;
+  }
+
+  function handleTextBoxActivate(data: { lines: string[]; text: string; blockIndex: number }) {
+    if (!$settings.yomitanPopupOnTextBoxTap) return;
+
+    const sourceText = joinTextBoxLines(data.lines);
+    logYomitanDebug('reader', 'textbox:activate', {
+      blockIndex: data.blockIndex,
+      lineCount: data.lines.length,
+      rawLinePreview: data.lines.slice(0, 3),
+      clickTextLength: data.text.length,
+      clickTextPreview: data.text.slice(0, 120),
+      normalizedTextLength: sourceText.length,
+      normalizedTextPreview: sourceText.slice(0, 120)
+    });
+    if (!sourceText) return;
+
+    yomitanSourceText = sourceText;
+    showYomitanDrawer = true;
   }
 
   async function handleContextMenuAddToAnki(selection: string) {
@@ -1219,6 +1243,7 @@
                     pageIndex={index + 1}
                     forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                     onContextMenu={handleTextBoxContextMenu}
+                    onTextBoxActivate={handleTextBoxActivate}
                   />
                 {/if}
                 <MangaPage
@@ -1229,6 +1254,7 @@
                   pageIndex={index}
                   forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
+                  onTextBoxActivate={handleTextBoxActivate}
                 />
               {:else}
                 <div class="flex h-screen w-screen items-center justify-center">
@@ -1272,6 +1298,20 @@
       onClose={() => (showContextMenu = false)}
     />
   {/if}
+  <YomitanDrawer
+    bind:open={showYomitanDrawer}
+    sourceText={yomitanSourceText}
+    ankiEnabled={$settings.ankiConnectSettings.enabled}
+    volumeMetadata={volume
+      ? {
+          seriesTitle: volume.series_title,
+          volumeTitle: volume.volume_title
+        }
+      : undefined}
+    onClose={() => {
+      showYomitanDrawer = false;
+    }}
+  />
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">

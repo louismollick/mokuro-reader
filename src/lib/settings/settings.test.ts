@@ -1,13 +1,28 @@
-// src/lib/settings/settings.test.ts
-import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import {
-  migrateProfiles,
   grayscaleActive,
   imageFilter,
-  updateSetting,
-  updateScheduleSetting
+  migrateProfiles,
+  updateScheduleSetting,
+  updateSetting
 } from './settings';
+
+describe('migrateProfiles', () => {
+  it('adds yomitanPopupOnTextBoxTap default for existing profiles', () => {
+    const migrated = migrateProfiles({
+      LegacyProfile: {
+        defaultFullscreen: true
+      } as any
+    });
+
+    expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(false);
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupDeckName).toBe('Default');
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupModelName).toBe('Basic');
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupFieldMappings).toEqual({});
+    expect(migrated.LegacyProfile.ankiConnectSettings.popupDuplicateBehavior).toBe('new');
+  });
+});
 
 describe('theme migration', () => {
   it('defaults a profile with no theme to the Dark preset', () => {
@@ -26,8 +41,6 @@ describe('theme migration', () => {
     expect(out.Test.theme).toBe('custom');
     expect(out.Test.customTheme.background).toBe('#123456');
     expect(out.Test.customTheme.base).toBe('dark');
-    // Must keep dark-appropriate tokens (light text), not the default light
-    // palette — otherwise text-white chrome would be mapped to black.
     expect(out.Test.customTheme.text).toBe('#ffffff');
   });
 
@@ -42,7 +55,6 @@ describe('theme migration', () => {
 
 describe('grayscaleActive', () => {
   beforeEach(() => {
-    // Known baseline: manual mode, filter off
     updateScheduleSetting('grayscaleSchedule', 'enabled', false);
     updateSetting('grayscale', false);
   });
@@ -59,12 +71,13 @@ describe('grayscaleActive', () => {
     beforeEach(() => {
       vi.useFakeTimers();
     });
+
     afterEach(() => {
       vi.useRealTimers();
     });
 
     it('is active when the current time is within a crossing-midnight schedule', () => {
-      vi.setSystemTime(new Date(2026, 0, 1, 22, 0, 0)); // 22:00
+      vi.setSystemTime(new Date(2026, 0, 1, 22, 0, 0));
       updateScheduleSetting('grayscaleSchedule', 'startTime', '21:00');
       updateScheduleSetting('grayscaleSchedule', 'endTime', '06:00');
       updateScheduleSetting('grayscaleSchedule', 'enabled', true);
@@ -72,7 +85,7 @@ describe('grayscaleActive', () => {
     });
 
     it('is inactive when the current time is outside the schedule', () => {
-      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0)); // 12:00
+      vi.setSystemTime(new Date(2026, 0, 1, 12, 0, 0));
       updateScheduleSetting('grayscaleSchedule', 'startTime', '21:00');
       updateScheduleSetting('grayscaleSchedule', 'endTime', '06:00');
       updateScheduleSetting('grayscaleSchedule', 'enabled', true);
@@ -83,7 +96,6 @@ describe('grayscaleActive', () => {
 
 describe('imageFilter', () => {
   beforeEach(() => {
-    // Manual mode for both filters, both off
     updateScheduleSetting('invertColorsSchedule', 'enabled', false);
     updateScheduleSetting('grayscaleSchedule', 'enabled', false);
     updateSetting('invertColors', false);
