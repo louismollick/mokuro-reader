@@ -14,6 +14,7 @@
   import VolumeDefaults from './Volume/VolumeDefaults.svelte';
   import About from './About.svelte';
   import QuickAccess from './QuickAccess.svelte';
+  import AppearanceSettings from './AppearanceSettings.svelte';
 
   let transitionParams = {
     x: 320,
@@ -94,6 +95,7 @@
       <AnkiConnectSettings />
       <YomitanSettings />
       <CatalogSettings />
+      <AppearanceSettings />
       <Stats />
       <About />
     </Accordion>

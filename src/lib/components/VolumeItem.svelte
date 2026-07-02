@@ -345,10 +345,10 @@
           deleteVolumeStats(volume.volume_uuid);
         }
 
-        // Delete from cloud if checkbox checked
+        // Delete from cloud if checkbox checked (archive + sidecars)
         if (deleteCloud && hasCloudBackup && cloudFile) {
           try {
-            await unifiedCloudManager.deleteFile(cloudFile);
+            await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
             showSnackbar(`Deleted from ${providerDisplayName}`);
           } catch (error) {
             console.error('Failed to delete from cloud:', error);
@@ -468,9 +468,12 @@
 
     // If already backed up, delete from cloud
     if (isBackedUp && cloudFile) {
+      // Capture provider before the await: cloudFile is a $derived that becomes
+      // undefined once the delete refreshes the cache.
+      const providerType = cloudFile.provider;
       try {
-        await unifiedCloudManager.deleteFile(cloudFile);
-        const providerName = cloudFile.provider === 'google-drive' ? 'Drive' : cloudFile.provider;
+        await unifiedCloudManager.deleteManagedVolume(volume.series_title, volume.volume_title);
+        const providerName = providerType === 'google-drive' ? 'Drive' : providerType;
         showSnackbar(`Deleted from ${providerName}`);
       } catch (error) {
         console.error('Delete failed:', error);
@@ -530,7 +533,7 @@
             src={thumbnailUrl}
             alt="img"
             style="margin-right:10px;"
-            class="h-[70px] w-[50px] border border-gray-900 bg-black object-contain"
+            class="h-[70px] w-[50px] border border-gray-300 bg-gray-100 object-contain dark:border-gray-900 dark:bg-black"
           />
         {:else}
           <div
@@ -546,7 +549,13 @@
         >
           <div>
             <div class="mb-1 flex items-center gap-2">
-              <p class="font-semibold" class:text-white={!isComplete}>{volName}</p>
+              <p
+                class="font-semibold"
+                class:text-gray-900={!isComplete}
+                class:dark:text-white={!isComplete}
+              >
+                {volName}
+              </p>
               {#if isImageOnly}
                 <Badge color="blue" class="text-xs">
                   <ImageOutline class="me-1 inline h-3 w-3" />
@@ -716,7 +725,7 @@
             <img
               src={thumbnailUrl}
               alt={volName}
-              class="h-auto w-auto border border-gray-900 bg-black sm:max-h-[350px] sm:max-w-[250px]"
+              class="h-auto w-auto border border-gray-300 bg-gray-100 sm:max-h-[350px] sm:max-w-[250px] dark:border-gray-900 dark:bg-black"
             />
           {:else}
             <PlaceholderThumbnail message="Generating thumbnail..." />
