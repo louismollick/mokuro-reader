@@ -12,6 +12,7 @@ import { getInstalledDictionaries } from '$lib/yomitan/core';
 import { importCoreAnkiModule } from '$lib/yomitan/anki-core';
 
 const PRECHECK_WARNING_TITLE = 'Could not verify duplicates; add may create a duplicate.';
+const POPUP_FIELDS_TO_SKIP = new Set(['maindefinition']);
 
 export async function getPopupFieldMarkers(): Promise<string[]> {
   const ankiModule = await importCoreAnkiModule();
@@ -49,7 +50,10 @@ export async function buildPopupAnkiNote(
   const mappedFields = Object.fromEntries(
     Object.entries(popupFieldMappings)
       .map(([key, value]) => [key.trim(), value.trim()])
-      .filter(([key, value]) => key.length > 0 && value.length > 0)
+      .filter(
+        ([key, value]) =>
+          key.length > 0 && value.length > 0 && !POPUP_FIELDS_TO_SKIP.has(key.toLowerCase())
+      )
       .map(([key, value]) => [key, { value }])
   );
 

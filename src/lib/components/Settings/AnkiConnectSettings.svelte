@@ -168,26 +168,6 @@
       popupModelFields.find((field) => field.toLowerCase() === name.toLowerCase()) ||
       popupModelFields.find((field) => field.toLowerCase().includes(name.toLowerCase()));
 
-    const pickPreferredMainDefinitionMarker = () => {
-      const scoreMarker = (marker: string) => {
-        const lower = marker.toLowerCase();
-        let score = 0;
-        if (lower.startsWith('single-glossary-')) score += 1000;
-        else if (lower.includes('single-glossary')) score += 500;
-        if (lower.includes('jitendex')) score += 100;
-        if (lower.includes('jmdict')) score += 80;
-        if (lower.includes('glossary')) score += 10;
-        return score;
-      };
-
-      const best = [...popupFieldMarkers]
-        .map((marker) => ({ marker, score: scoreMarker(marker) }))
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score)[0];
-
-      return best ? `{${best.marker}}` : '{glossary}';
-    };
-
     if (popupModelName.trim().toLowerCase() === 'lapis') {
       const lapisMappings: Array<[string, string]> = [
         ['Expression', '{expression}'],
@@ -195,7 +175,6 @@
         ['ExpressionReading', '{reading}'],
         ['ExpressionAudio', '{audio}'],
         ['SelectionText', '{popup-selection-text}'],
-        ['MainDefinition', pickPreferredMainDefinitionMarker()],
         ['Sentence', '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}'],
         ['Glossary', '{glossary}'],
         ['PitchPosition', '{pitch-accent-positions}'],

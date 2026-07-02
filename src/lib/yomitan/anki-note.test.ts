@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { writable } from 'svelte/store';
+import { settings } from '$lib/settings';
 import { getPopupAnkiButtonStates } from './anki-note';
 
 const coreMocks = vi.hoisted(() => ({
@@ -12,8 +13,8 @@ const ankiCoreMocks = vi.hoisted(() => ({
 
 vi.mock('$lib/yomitan/core', () => coreMocks);
 vi.mock('$lib/yomitan/anki-core', () => ankiCoreMocks);
-vi.mock('$lib/settings', () => {
-  const settings = writable({
+vi.mock('$lib/settings', () => ({
+  settings: writable({
     ankiConnectSettings: {
       url: 'http://127.0.0.1:8765',
       popupDeckName: 'Default',
@@ -22,10 +23,8 @@ vi.mock('$lib/settings', () => {
       tags: '',
       popupDuplicateBehavior: 'new'
     }
-  });
-
-  return { settings };
-});
+  })
+}));
 
 function createMockAnkiModule(overrides?: {
   canAddNotesWithErrorDetail?: (
@@ -143,5 +142,41 @@ describe('getPopupAnkiButtonStates', () => {
 
     expect(result.hadConnectionError).toBe(true);
     expect(result.buttonStates[0]?.state).toBe('ready');
+  });
+});
+
+describe('buildPopupAnkiNote', () => {
+  it('does not populate MainDefinition popup field mappings', async () => {
+    const ankiModule = createMockAnkiModule();
+    ankiCoreMocks.importCoreAnkiModule.mockResolvedValue(ankiModule);
+
+    (settings as typeof settings & { set: (value: unknown) => void }).set({
+      ankiConnectSettings: {
+        url: 'http://127.0.0.1:8765',
+        popupDeckName: 'Default',
+        popupModelName: 'Basic',
+        popupFieldMappings: {
+          Front: '{expression}',
+          MainDefinition: '{glossary}',
+          Glossary: '{glossary}'
+        },
+        tags: '',
+        popupDuplicateBehavior: 'new'
+      }
+    } as never);
+
+    const { buildPopupAnkiNote } = await import('./anki-note');
+    await buildPopupAnkiNote({} as never, '猫');
+
+    expect(ankiModule.buildAnkiNoteFromDictionaryEntry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cardFormat: expect.objectContaining({
+          fields: {
+            Front: { value: '{expression}' },
+            Glossary: { value: '{glossary}' }
+          }
+        })
+      })
+    );
   });
 });
