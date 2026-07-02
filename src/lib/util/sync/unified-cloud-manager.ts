@@ -25,7 +25,9 @@ function stripManagedFileExtension(path: string): string {
   if (lower.endsWith('.cbz')) return path.slice(0, -4);
   if (lower.endsWith('.mokuro.gz')) return path.slice(0, -10);
   if (lower.endsWith('.mokuro')) return path.slice(0, -7);
+  if (lower.endsWith('.jpeg')) return path.slice(0, -5);
   if (lower.endsWith('.webp')) return path.slice(0, -5);
+  if (lower.endsWith('.jpg')) return path.slice(0, -4);
   return path;
 }
 
@@ -192,6 +194,46 @@ class UnifiedCloudManager {
     const cache = cacheManager.getCache(provider.type);
     if (cache && cache.removeById) {
       cache.removeById(file.fileId);
+    }
+  }
+
+  /**
+   * Delete a backed-up volume and ALL its managed cloud files (archive + sidecars).
+   * deleteFile() removes only a single node, which leaves the .mokuro and thumbnail
+   * sidecars orphaned. Sidecars are deleted first and the .cbz archive last, so a
+   * sidecar failure leaves the volume still marked backed-up (and retryable) rather
+   * than half-deleted.
+   */
+  async deleteManagedVolume(seriesTitle: string, volumeTitle: string): Promise<void> {
+    const provider = this.getActiveProvider();
+    if (!provider) {
+      throw new Error('No cloud provider authenticated');
+    }
+
+    const files = this.getManagedCloudFilesForVolume(seriesTitle, volumeTitle);
+    if (files.length === 0) return;
+
+    const ordered = [...files].sort(
+      (a, b) =>
+        Number(normalizeCloudPath(a.path).endsWith('.cbz')) -
+        Number(normalizeCloudPath(b.path).endsWith('.cbz'))
+    );
+
+    const cache = cacheManager.getCache(provider.type);
+    const failures: string[] = [];
+    for (const file of ordered) {
+      try {
+        await provider.deleteFile(file);
+        cache?.removeById?.(file.fileId);
+      } catch (error) {
+        failures.push(`${file.path}: ${error instanceof Error ? error.message : 'error'}`);
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(
+        `Failed to delete ${failures.length} of ${files.length} file(s): ${failures.join('; ')}`
+      );
     }
   }
 
