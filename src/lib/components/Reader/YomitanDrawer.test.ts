@@ -106,7 +106,7 @@ describe('YomitanDrawer', () => {
     coreMocks.tokenizeText.mockResolvedValue([
       {
         text: '日本語',
-        range: { startUtf16: 0, endUtf16: 3 },
+        range: { startUtf16: 2, endUtf16: 5 },
         reading: 'にほんご',
         term: '日本語',
         selectable: true,
@@ -117,14 +117,14 @@ describe('YomitanDrawer', () => {
 
     const { getByText, queryByTitle, getByTestId } = render(YomitanDrawer, {
       open: true,
-      sourceText: '日本語'
+      sourceText: '😀日本語'
     });
 
     await waitFor(() => expect(getByText('日本語')).toBeTruthy());
     await fireEvent.click(getByText('日本語'));
 
     await waitFor(() => {
-      expect(coreMocks.lookupTermAt).toHaveBeenCalledWith('日本語', 0, expect.any(Array));
+      expect(coreMocks.lookupTermAt).toHaveBeenCalledWith('😀日本語', 2, expect.any(Array));
       expect(coreMocks.createTermEntryRenderer).toHaveBeenCalled();
       expect(termRendererMocks.renderTermEntries).toHaveBeenCalled();
       expect(getByTestId('yomitan-results')).toBeTruthy();

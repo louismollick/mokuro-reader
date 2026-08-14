@@ -45,6 +45,8 @@ export type YomitanTermEntryRendererCreateOptions = TermEntryRendererCreateOptio
 export type YomitanKanjiEntryRendererCreateOptions = KanjiEntryRendererCreateOptions;
 
 let coreInstance: YomitanClient | null = null;
+let coreInitialization: Promise<YomitanClient> | null = null;
+let coreLifecycleGeneration = 0;
 
 async function importCoreIndexModule() {
   return await import('yomitan-core');
@@ -52,21 +54,56 @@ async function importCoreIndexModule() {
 
 async function getCoreInstance() {
   if (coreInstance) return coreInstance;
+  if (coreInitialization) return await coreInitialization;
 
-  const module = await importCoreIndexModule();
-  const core = module.createYomitan({
-    storage: new module.DictionaryDB('mokuro-reader-yomitan'),
-    initLanguage: true
-  });
-  await core.initialize();
-  coreInstance = core;
-  return coreInstance;
+  const generation = coreLifecycleGeneration;
+  const initialization = (async () => {
+    const module = await importCoreIndexModule();
+    const core = module.createYomitan({
+      storage: new module.DictionaryDB('mokuro-reader-yomitan'),
+      initLanguage: true
+    });
+
+    try {
+      await core.initialize();
+    } catch (error) {
+      await core.dispose();
+      throw error;
+    }
+
+    if (generation !== coreLifecycleGeneration) {
+      await core.dispose();
+      throw new Error('Yomitan initialization was cancelled.');
+    }
+
+    coreInstance = core;
+    return core;
+  })();
+  coreInitialization = initialization;
+
+  try {
+    return await initialization;
+  } finally {
+    if (coreInitialization === initialization) {
+      coreInitialization = null;
+    }
+  }
 }
 
 export async function disposeYomitan() {
+  coreLifecycleGeneration += 1;
+  const initialization = coreInitialization;
   const core = coreInstance;
   coreInstance = null;
   await core?.dispose();
+
+  if (initialization) {
+    try {
+      await initialization;
+    } catch {
+      // Initialization disposes its client before rejecting.
+    }
+  }
 }
 
 if (import.meta.hot) {
