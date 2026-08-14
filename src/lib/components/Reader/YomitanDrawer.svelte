@@ -5,8 +5,8 @@
   import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import {
-    buildEnabledKanjiDictionaryMap,
-    buildEnabledDictionaryMap,
+    buildEnabledKanjiDictionaries,
+    buildEnabledDictionaries,
     getInstalledDictionaries,
     lookupKanji,
     lookupTerm,
@@ -482,11 +482,11 @@
         dictionaries.map((item) => item.title),
         loadDictionaryPreferences()
       );
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      const enabledMap = buildEnabledDictionaries(normalizedPreferences);
       debugYomitan('lookup:start', {
         tokenText: params.query,
         tokenIndex: params.tokenIndex,
-        enabledDictionaryCount: enabledMap.size,
+        enabledDictionaryCount: enabledMap.length,
         mode: params.mode
       });
 
@@ -559,14 +559,14 @@
         dictionaries.map((item) => item.title),
         loadDictionaryPreferences()
       );
-      const enabledMap = buildEnabledKanjiDictionaryMap(normalizedPreferences, dictionaries);
+      const enabledMap = buildEnabledKanjiDictionaries(normalizedPreferences, dictionaries);
       debugYomitan('lookup:kanji-start', {
         character: params.query,
-        enabledDictionaryCount: enabledMap.size,
+        enabledDictionaryCount: enabledMap.length,
         mode: params.mode
       });
 
-      if (enabledMap.size === 0) {
+      if (enabledMap.length === 0) {
         noticeMessage = 'No enabled kanji dictionaries.';
         return false;
       }
@@ -651,12 +651,12 @@
       );
       saveDictionaryPreferences(normalizedPreferences);
 
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      const enabledMap = buildEnabledDictionaries(normalizedPreferences);
       debugYomitan('load:dictionary-preferences', {
         normalizedPreferences,
-        enabledDictionaryCount: enabledMap.size
+        enabledDictionaryCount: enabledMap.length
       });
-      if (enabledMap.size === 0) {
+      if (enabledMap.length === 0) {
         errorMessage = 'All dictionaries are disabled. Enable at least one in Settings > Yomitan.';
         return;
       }

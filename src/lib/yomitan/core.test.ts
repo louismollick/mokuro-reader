@@ -1,9 +1,30 @@
 import { describe, expect, it } from 'vitest';
-import { buildEnabledKanjiDictionaryMap } from './core';
+import { buildEnabledDictionaries, buildEnabledKanjiDictionaries } from './core';
 
-describe('buildEnabledKanjiDictionaryMap', () => {
+describe('buildEnabledDictionaries', () => {
+  it('returns the serializable v2 dictionary selection shape', () => {
+    expect(
+      buildEnabledDictionaries([
+        { title: 'JMdict', enabled: true },
+        { title: 'Disabled', enabled: false }
+      ])
+    ).toEqual([
+      {
+        id: 'JMdict',
+        index: 0,
+        priority: 0,
+        alias: 'JMdict',
+        allowSecondarySearches: false,
+        partsOfSpeechFilter: true,
+        useDeinflections: true
+      }
+    ]);
+  });
+});
+
+describe('buildEnabledKanjiDictionaries', () => {
   it('keeps enabled preference order and filters non-kanji dictionaries', () => {
-    const result = buildEnabledKanjiDictionaryMap(
+    const result = buildEnabledKanjiDictionaries(
       [
         { title: 'JMdict', enabled: true },
         { title: 'KANJIDIC', enabled: true },
@@ -18,9 +39,9 @@ describe('buildEnabledKanjiDictionaryMap', () => {
       ] as never
     );
 
-    expect([...result.entries()]).toEqual([
-      ['KANJIDIC', { index: 0, alias: 'KANJIDIC' }],
-      ['JPDB Kanji', { index: 1, alias: 'JPDB Kanji' }]
+    expect(result).toEqual([
+      { id: 'KANJIDIC', index: 0, alias: 'KANJIDIC' },
+      { id: 'JPDB Kanji', index: 1, alias: 'JPDB Kanji' }
     ]);
   });
 });
