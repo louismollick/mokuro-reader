@@ -10,6 +10,7 @@
     getInstalledDictionaries,
     lookupKanji,
     lookupTerm,
+    lookupTermAt,
     tokenizeText,
     type YomitanDictionarySummary,
     type YomitanToken
@@ -474,6 +475,7 @@
     rootSourceText: string;
     mode: 'replace-active-term' | 'push';
     pushOnEmpty?: boolean;
+    utf16Offset?: number;
   }): Promise<{ foundEntries: boolean; viewId: number | null }> {
     const requestId = beginNavigation();
 
@@ -490,7 +492,10 @@
         mode: params.mode
       });
 
-      const lookup = await lookupTerm(params.query, enabledMap);
+      const lookup =
+        params.utf16Offset === undefined
+          ? await lookupTerm(params.query, enabledMap)
+          : await lookupTermAt(params.rootSourceText, params.utf16Offset, enabledMap);
       if (!isActiveNavigation(requestId)) {
         return { foundEntries: false, viewId: null };
       }
@@ -498,7 +503,7 @@
       const previousView = currentView;
       const nextView = buildTermView({
         query: params.query,
-        entries: lookup.entries,
+        entries: lookup?.entries ?? [],
         popupSourceText: params.popupSourceText,
         rootSourceText: params.rootSourceText,
         tokenIndex: params.tokenIndex,
@@ -507,12 +512,12 @@
 
       debugYomitan('lookup:complete', {
         tokenText: params.query,
-        entryCount: lookup.entries.length,
-        originalTextLength: lookup.originalTextLength,
+        entryCount: lookup?.entries.length ?? 0,
+        originalTextLength: lookup?.originalTextLength ?? 0,
         mode: params.mode
       });
 
-      if (!lookup.entries.length && params.pushOnEmpty === false) {
+      if (!lookup?.entries.length && params.pushOnEmpty === false) {
         return { foundEntries: false, viewId: null };
       }
 
@@ -522,7 +527,7 @@
         replaceActiveTermView(nextView);
       }
 
-      if (ankiEnabled && lookup.entries.length > 0) {
+      if (ankiEnabled && lookup && lookup.entries.length > 0) {
         void precheckAnkiButtonStates(
           nextView.id,
           lookup.entries,
@@ -530,7 +535,7 @@
           params.rootSourceText
         );
       }
-      return { foundEntries: lookup.entries.length > 0, viewId: nextView.id };
+      return { foundEntries: (lookup?.entries.length ?? 0) > 0, viewId: nextView.id };
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
       debugYomitan('lookup:failed', {
@@ -728,6 +733,7 @@
       tokenIndex: index,
       popupSourceText: token.text,
       rootSourceText: getRootSourceText(),
+      utf16Offset: token.range?.startUtf16,
       mode: 'replace-active-term'
     });
   }

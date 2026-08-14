@@ -3,6 +3,7 @@ import type {
   InstalledDictionary,
   KanjiDictionaryEntry,
   TermDictionaryEntry,
+  Utf16Range,
   YomitanClient
 } from 'yomitan-core';
 import {
@@ -26,6 +27,7 @@ export type YomitanDictionarySummary = InstalledDictionary;
 
 export interface YomitanToken {
   text: string;
+  range: Utf16Range;
   reading: string;
   term: string;
   selectable: boolean;
@@ -59,6 +61,18 @@ async function getCoreInstance() {
   await core.initialize();
   coreInstance = core;
   return coreInstance;
+}
+
+export async function disposeYomitan() {
+  const core = coreInstance;
+  coreInstance = null;
+  await core?.dispose();
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    void disposeYomitan();
+  });
 }
 
 function normalizeSourceText(lines: string[]) {
@@ -164,13 +178,13 @@ export async function tokenizeText(text: string, dictionaries: DictionarySelecti
 
   const tokens: YomitanToken[] = [];
   for (const token of scannedTokens) {
-    const tokenText = token.text.trim();
-    if (!tokenText) continue;
+    if (!token.text.trim()) continue;
 
     tokens.push({
-      text: tokenText,
+      text: token.text,
+      range: token.range,
       reading: token.reading,
-      term: tokenText,
+      term: token.headwords[0]?.term ?? token.text,
       selectable: token.selectable,
       kind: token.selectable ? 'word' : 'other'
     });
@@ -187,6 +201,27 @@ export async function tokenizeText(text: string, dictionaries: DictionarySelecti
   });
 
   return tokens;
+}
+
+export async function lookupTermAt(
+  text: string,
+  utf16Offset: number,
+  dictionaries: DictionarySelection[]
+) {
+  const core = await getCoreInstance();
+  return await core.lookup.termAt({
+    text,
+    utf16Offset,
+    language: 'ja',
+    dictionaries,
+    options: {
+      mode: 'group',
+      matchType: 'exact',
+      deinflect: true,
+      removeNonJapaneseCharacters: false,
+      searchResolution: 'letter'
+    }
+  });
 }
 
 export async function lookupTerm(text: string, dictionaries: DictionarySelection[]) {

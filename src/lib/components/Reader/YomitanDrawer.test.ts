@@ -23,6 +23,7 @@ const coreMocks = vi.hoisted(() => ({
   tokenizeText: vi.fn(),
   lookupKanji: vi.fn(),
   lookupTerm: vi.fn(),
+  lookupTermAt: vi.fn(),
   createTermEntryRenderer: vi.fn(),
   createKanjiEntryRenderer: vi.fn()
 }));
@@ -103,9 +104,16 @@ describe('YomitanDrawer', () => {
 
   it('renders token buttons and mounts yomitan results renderer after token click', async () => {
     coreMocks.tokenizeText.mockResolvedValue([
-      { text: '日本語', reading: 'にほんご', term: '日本語', selectable: true, kind: 'word' }
+      {
+        text: '日本語',
+        range: { startUtf16: 0, endUtf16: 3 },
+        reading: 'にほんご',
+        term: '日本語',
+        selectable: true,
+        kind: 'word'
+      }
     ]);
-    coreMocks.lookupTerm.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
+    coreMocks.lookupTermAt.mockResolvedValue({ entries: [{ id: 1 }], originalTextLength: 3 });
 
     const { getByText, queryByTitle, getByTestId } = render(YomitanDrawer, {
       open: true,
@@ -116,6 +124,7 @@ describe('YomitanDrawer', () => {
     await fireEvent.click(getByText('日本語'));
 
     await waitFor(() => {
+      expect(coreMocks.lookupTermAt).toHaveBeenCalledWith('日本語', 0, expect.any(Array));
       expect(coreMocks.createTermEntryRenderer).toHaveBeenCalled();
       expect(termRendererMocks.renderTermEntries).toHaveBeenCalled();
       expect(getByTestId('yomitan-results')).toBeTruthy();
