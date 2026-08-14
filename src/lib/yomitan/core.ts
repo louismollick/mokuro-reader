@@ -1,8 +1,10 @@
 import type {
+  DictionarySelection,
+  InstalledDictionary,
   KanjiDictionaryEntry,
-  ParseTextResultItem,
-  Summary,
-  TermDictionaryEntry
+  TermDictionaryEntry,
+  Utf16Range,
+  YomitanClient
 } from 'yomitan-core';
 import {
   createKanjiEntryRenderer as createCoreKanjiEntryRenderer,
@@ -21,10 +23,11 @@ import type {
 import type { DictionaryPreference } from './preferences';
 import { getCodePointPreview, logYomitanDebug } from './debug';
 
-export type YomitanDictionarySummary = Summary;
+export type YomitanDictionarySummary = InstalledDictionary;
 
 export interface YomitanToken {
   text: string;
+  range: Utf16Range;
   reading: string;
   term: string;
   selectable: boolean;
@@ -41,10 +44,9 @@ export type YomitanKanjiEntryRenderer = KanjiEntryRenderer;
 export type YomitanTermEntryRendererCreateOptions = TermEntryRendererCreateOptions;
 export type YomitanKanjiEntryRendererCreateOptions = KanjiEntryRendererCreateOptions;
 
-type SimpleEnabledDictionaryMap = Map<string, { index: number; priority: number }>;
-type SimpleEnabledKanjiDictionaryMap = Map<string, { index: number; alias: string }>;
-
-let coreInstance: any | null = null;
+let coreInstance: YomitanClient | null = null;
+let coreInitialization: Promise<YomitanClient> | null = null;
+let coreLifecycleGeneration = 0;
 
 async function importCoreIndexModule() {
   return await import('yomitan-core');
@@ -52,41 +54,62 @@ async function importCoreIndexModule() {
 
 async function getCoreInstance() {
   if (coreInstance) return coreInstance;
+  if (coreInitialization) return await coreInitialization;
 
-  const module = await importCoreIndexModule();
-  const YomitanCore = module.default;
-  const core = new YomitanCore({
-    databaseName: 'mokuro-reader-yomitan',
-    initLanguage: true
-  });
-  await core.initialize();
-  coreInstance = core;
-  return coreInstance;
+  const generation = coreLifecycleGeneration;
+  const initialization = (async () => {
+    const module = await importCoreIndexModule();
+    const core = module.createYomitan({
+      storage: new module.DictionaryDB('mokuro-reader-yomitan'),
+      initLanguage: true
+    });
+
+    try {
+      await core.initialize();
+    } catch (error) {
+      await core.dispose();
+      throw error;
+    }
+
+    if (generation !== coreLifecycleGeneration) {
+      await core.dispose();
+      throw new Error('Yomitan initialization was cancelled.');
+    }
+
+    coreInstance = core;
+    return core;
+  })();
+  coreInitialization = initialization;
+
+  try {
+    return await initialization;
+  } finally {
+    if (coreInitialization === initialization) {
+      coreInitialization = null;
+    }
+  }
 }
 
-function toFindTermDictionaryMap(enabledDictionaryMap: SimpleEnabledDictionaryMap) {
-  const map = new Map<
-    string,
-    {
-      index: number;
-      alias: string;
-      allowSecondarySearches: boolean;
-      partsOfSpeechFilter: boolean;
-      useDeinflections: boolean;
+export async function disposeYomitan() {
+  coreLifecycleGeneration += 1;
+  const initialization = coreInitialization;
+  const core = coreInstance;
+  coreInstance = null;
+  await core?.dispose();
+
+  if (initialization) {
+    try {
+      await initialization;
+    } catch {
+      // Initialization disposes its client before rejecting.
     }
-  >();
-
-  for (const [name, { index }] of enabledDictionaryMap.entries()) {
-    map.set(name, {
-      index,
-      alias: name,
-      allowSecondarySearches: false,
-      partsOfSpeechFilter: true,
-      useDeinflections: true
-    });
   }
+}
 
-  return map;
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    void disposeYomitan();
+  });
 }
 
 function normalizeSourceText(lines: string[]) {
@@ -98,28 +121,28 @@ function normalizeSourceText(lines: string[]) {
     .trim();
 }
 
-export function buildEnabledDictionaryMap(preferences: DictionaryPreference[]) {
-  const enabled = preferences.filter((item) => item.enabled);
-  const map: SimpleEnabledDictionaryMap = new Map();
-
-  enabled.forEach((item, index) => {
-    map.set(item.title, {
+export function buildEnabledDictionaries(preferences: DictionaryPreference[]) {
+  return preferences
+    .filter((item) => item.enabled)
+    .map<DictionarySelection>((item, index) => ({
+      id: item.title,
       index,
-      priority: 0
-    });
-  });
-
-  return map;
+      priority: 0,
+      alias: item.title,
+      allowSecondarySearches: false,
+      partsOfSpeechFilter: true,
+      useDeinflections: true
+    }));
 }
 
-export function buildEnabledKanjiDictionaryMap(
+export function buildEnabledKanjiDictionaries(
   preferences: DictionaryPreference[],
   installedDictionaries: YomitanDictionarySummary[]
 ) {
   const installedDictionaryMap = new Map(
     installedDictionaries.map((dictionary) => [dictionary.title, dictionary])
   );
-  const map: SimpleEnabledKanjiDictionaryMap = new Map();
+  const dictionaries: DictionarySelection[] = [];
   let index = 0;
 
   for (const preference of preferences) {
@@ -130,19 +153,20 @@ export function buildEnabledKanjiDictionaryMap(
       continue;
     }
 
-    map.set(preference.title, {
+    dictionaries.push({
+      id: preference.title,
       index,
       alias: preference.title
     });
     index += 1;
   }
 
-  return map;
+  return dictionaries;
 }
 
 export async function getInstalledDictionaries(): Promise<YomitanDictionarySummary[]> {
   const core = await getCoreInstance();
-  const dictionaries = (await core.getDictionaryInfo()) as Summary[];
+  const dictionaries = await core.dictionaries.list();
   return [...dictionaries].sort((a, b) => b.importDate - a.importDate);
 }
 
@@ -151,65 +175,56 @@ export async function importDictionaryZip(
   onProgress?: (progress: { index: number; count: number; nextStep?: boolean }) => void
 ) {
   const core = await getCoreInstance();
-  return await core.importDictionary(archive, {
+  return await core.dictionaries.import({
+    source: archive,
     onProgress
   });
 }
 
 export async function deleteDictionary(title: string) {
   const core = await getCoreInstance();
-  await core.deleteDictionary(title);
+  await core.dictionaries.remove(title);
 }
 
-export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
+export async function tokenizeText(text: string, dictionaries: DictionarySelection[]) {
   const core = await getCoreInstance();
-  const parserDictionaryMap = toFindTermDictionaryMap(enabledDictionaryMap);
   logYomitanDebug('core', 'tokenize:start', {
     textLength: text.length,
     textPreview: text.slice(0, 80),
     textCodePoints: getCodePointPreview(text),
-    enabledDictionaryCount: parserDictionaryMap.size,
-    enabledDictionaryNames: [...parserDictionaryMap.keys()]
+    enabledDictionaryCount: dictionaries.length,
+    enabledDictionaryNames: dictionaries.map(({ id }) => id)
   });
 
-  const parsed = (await core.parseText(text, {
+  const scannedTokens = await core.lookup.scanLine({
+    text,
     language: 'ja',
-    enabledDictionaryMap: parserDictionaryMap,
-    scanLength: 10,
-    searchResolution: 'letter',
-    removeNonJapaneseCharacters: false,
-    deinflect: true,
-    textReplacements: [null]
-  })) as ParseTextResultItem[];
+    dictionaries,
+    options: {
+      scanLength: 10,
+      searchResolution: 'letter',
+      removeNonJapaneseCharacters: false,
+      deinflect: true,
+      textReplacements: [null]
+    }
+  });
 
-  logYomitanDebug('core', 'tokenize:parseText-complete', {
-    parseResultCount: parsed.length,
-    contentBlockCount: parsed.reduce(
-      (total, parseResult) => total + (parseResult.content?.length || 0),
-      0
-    )
+  logYomitanDebug('core', 'tokenize:scanLine-complete', {
+    tokenCount: scannedTokens.length
   });
 
   const tokens: YomitanToken[] = [];
-  for (const parseResult of parsed) {
-    const lines = parseResult.content || [];
-    for (const line of lines) {
-      for (const segment of line) {
-        if (!segment.text) continue;
-        const tokenText = segment.text.trim();
-        if (!tokenText) continue;
+  for (const token of scannedTokens) {
+    if (!token.text.trim()) continue;
 
-        const selectable = Array.isArray(segment.headwords) && segment.headwords.length > 0;
-
-        tokens.push({
-          text: tokenText,
-          reading: segment.reading || '',
-          term: tokenText,
-          selectable,
-          kind: selectable ? 'word' : 'other'
-        });
-      }
-    }
+    tokens.push({
+      text: token.text,
+      range: token.range,
+      reading: token.reading,
+      term: token.headwords[0]?.term ?? token.text,
+      selectable: token.selectable,
+      kind: token.selectable ? 'word' : 'other'
+    });
   }
 
   logYomitanDebug('core', 'tokenize:complete', {
@@ -225,13 +240,35 @@ export async function tokenizeText(text: string, enabledDictionaryMap: SimpleEna
   return tokens;
 }
 
-export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabledDictionaryMap) {
+export async function lookupTermAt(
+  text: string,
+  utf16Offset: number,
+  dictionaries: DictionarySelection[]
+) {
   const core = await getCoreInstance();
-  const result = (await core.findTerms(text, {
-    mode: 'group',
+  return await core.lookup.termAt({
+    text,
+    utf16Offset,
     language: 'ja',
-    enabledDictionaryMap: toFindTermDictionaryMap(enabledDictionaryMap),
+    dictionaries,
     options: {
+      mode: 'group',
+      matchType: 'exact',
+      deinflect: true,
+      removeNonJapaneseCharacters: false,
+      searchResolution: 'letter'
+    }
+  });
+}
+
+export async function lookupTerm(text: string, dictionaries: DictionarySelection[]) {
+  const core = await getCoreInstance();
+  const result = (await core.lookup.terms({
+    text,
+    language: 'ja',
+    dictionaries,
+    options: {
+      mode: 'group',
       matchType: 'exact',
       deinflect: true,
       removeNonJapaneseCharacters: false,
@@ -242,13 +279,11 @@ export async function lookupTerm(text: string, enabledDictionaryMap: SimpleEnabl
   return result;
 }
 
-export async function lookupKanji(
-  text: string,
-  enabledDictionaryMap: SimpleEnabledKanjiDictionaryMap
-) {
+export async function lookupKanji(text: string, dictionaries: DictionarySelection[]) {
   const core = await getCoreInstance();
-  return (await core.findKanji(text, {
-    enabledDictionaryMap,
+  return (await core.lookup.kanji({
+    text,
+    dictionaries,
     removeNonJapaneseCharacters: true
   })) as KanjiDictionaryEntry[];
 }

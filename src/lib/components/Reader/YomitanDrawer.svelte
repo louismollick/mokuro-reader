@@ -5,11 +5,12 @@
   import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import {
-    buildEnabledKanjiDictionaryMap,
-    buildEnabledDictionaryMap,
+    buildEnabledKanjiDictionaries,
+    buildEnabledDictionaries,
     getInstalledDictionaries,
     lookupKanji,
     lookupTerm,
+    lookupTermAt,
     tokenizeText,
     type YomitanDictionarySummary,
     type YomitanToken
@@ -474,6 +475,7 @@
     rootSourceText: string;
     mode: 'replace-active-term' | 'push';
     pushOnEmpty?: boolean;
+    utf16Offset?: number;
   }): Promise<{ foundEntries: boolean; viewId: number | null }> {
     const requestId = beginNavigation();
 
@@ -482,15 +484,18 @@
         dictionaries.map((item) => item.title),
         loadDictionaryPreferences()
       );
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      const enabledMap = buildEnabledDictionaries(normalizedPreferences);
       debugYomitan('lookup:start', {
         tokenText: params.query,
         tokenIndex: params.tokenIndex,
-        enabledDictionaryCount: enabledMap.size,
+        enabledDictionaryCount: enabledMap.length,
         mode: params.mode
       });
 
-      const lookup = await lookupTerm(params.query, enabledMap);
+      const lookup =
+        params.utf16Offset === undefined
+          ? await lookupTerm(params.query, enabledMap)
+          : await lookupTermAt(params.rootSourceText, params.utf16Offset, enabledMap);
       if (!isActiveNavigation(requestId)) {
         return { foundEntries: false, viewId: null };
       }
@@ -498,7 +503,7 @@
       const previousView = currentView;
       const nextView = buildTermView({
         query: params.query,
-        entries: lookup.entries,
+        entries: lookup?.entries ?? [],
         popupSourceText: params.popupSourceText,
         rootSourceText: params.rootSourceText,
         tokenIndex: params.tokenIndex,
@@ -507,12 +512,12 @@
 
       debugYomitan('lookup:complete', {
         tokenText: params.query,
-        entryCount: lookup.entries.length,
-        originalTextLength: lookup.originalTextLength,
+        entryCount: lookup?.entries.length ?? 0,
+        originalTextLength: lookup?.originalTextLength ?? 0,
         mode: params.mode
       });
 
-      if (!lookup.entries.length && params.pushOnEmpty === false) {
+      if (!lookup?.entries.length && params.pushOnEmpty === false) {
         return { foundEntries: false, viewId: null };
       }
 
@@ -522,7 +527,7 @@
         replaceActiveTermView(nextView);
       }
 
-      if (ankiEnabled && lookup.entries.length > 0) {
+      if (ankiEnabled && lookup && lookup.entries.length > 0) {
         void precheckAnkiButtonStates(
           nextView.id,
           lookup.entries,
@@ -530,7 +535,7 @@
           params.rootSourceText
         );
       }
-      return { foundEntries: lookup.entries.length > 0, viewId: nextView.id };
+      return { foundEntries: (lookup?.entries.length ?? 0) > 0, viewId: nextView.id };
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
       debugYomitan('lookup:failed', {
@@ -559,14 +564,14 @@
         dictionaries.map((item) => item.title),
         loadDictionaryPreferences()
       );
-      const enabledMap = buildEnabledKanjiDictionaryMap(normalizedPreferences, dictionaries);
+      const enabledMap = buildEnabledKanjiDictionaries(normalizedPreferences, dictionaries);
       debugYomitan('lookup:kanji-start', {
         character: params.query,
-        enabledDictionaryCount: enabledMap.size,
+        enabledDictionaryCount: enabledMap.length,
         mode: params.mode
       });
 
-      if (enabledMap.size === 0) {
+      if (enabledMap.length === 0) {
         noticeMessage = 'No enabled kanji dictionaries.';
         return false;
       }
@@ -651,12 +656,12 @@
       );
       saveDictionaryPreferences(normalizedPreferences);
 
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
+      const enabledMap = buildEnabledDictionaries(normalizedPreferences);
       debugYomitan('load:dictionary-preferences', {
         normalizedPreferences,
-        enabledDictionaryCount: enabledMap.size
+        enabledDictionaryCount: enabledMap.length
       });
-      if (enabledMap.size === 0) {
+      if (enabledMap.length === 0) {
         errorMessage = 'All dictionaries are disabled. Enable at least one in Settings > Yomitan.';
         return;
       }
@@ -728,6 +733,7 @@
       tokenIndex: index,
       popupSourceText: token.text,
       rootSourceText: getRootSourceText(),
+      utf16Offset: token.range?.startUtf16,
       mode: 'replace-active-term'
     });
   }
