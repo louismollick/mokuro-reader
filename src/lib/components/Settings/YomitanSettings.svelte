@@ -54,10 +54,12 @@
     });
   }
 
-  function moveDictionary(index: number, direction: -1 | 1) {
-    const targetIndex = index + direction;
+  function moveDictionary(name: string, direction: -1 | 1) {
     return editDictionaries((list) => {
-      if (targetIndex < 0 || targetIndex >= list.length) return;
+      // Resolved against the latest list: it may have changed since this row rendered.
+      const index = list.findIndex((item) => item.name === name);
+      const targetIndex = index + direction;
+      if (index < 0 || targetIndex < 0 || targetIndex >= list.length) return;
       const [item] = list.splice(index, 1);
       list.splice(targetIndex, 0, item);
     });
@@ -282,13 +284,13 @@
                   size="xs"
                   color="alternative"
                   disabled={index === 0}
-                  onclick={() => moveDictionary(index, -1)}>Up</Button
+                  onclick={() => moveDictionary(dictionary.name, -1)}>Up</Button
                 >
                 <Button
                   size="xs"
                   color="alternative"
                   disabled={index === dictionaries.length - 1}
-                  onclick={() => moveDictionary(index, 1)}>Down</Button
+                  onclick={() => moveDictionary(dictionary.name, 1)}>Down</Button
                 >
                 <Button
                   size="xs"

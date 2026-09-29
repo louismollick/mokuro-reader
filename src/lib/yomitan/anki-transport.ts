@@ -12,7 +12,7 @@
 import { get } from 'svelte/store';
 import type { AnkiTransport } from 'yomitan-core';
 import { createAnkiConnectTransport } from 'yomitan-core';
-import { ankiConnect, isAndroidMode } from '$lib/anki-connect';
+import { isAndroidMode } from '$lib/anki-connect';
 import { settings } from '$lib/settings';
 
 const DEFAULT_URL = 'http://127.0.0.1:8765';
@@ -30,19 +30,46 @@ async function requestAnkiPermission(url: string): Promise<boolean> {
   }
 }
 
-/** `fetch`, but retried once through AnkiConnect's permission popup on a CORS failure. */
-function createMokuroFetch(url: string): typeof fetch {
+function requestAction(init: RequestInit | undefined): string | null {
+  try {
+    return typeof init?.body === 'string' ? (JSON.parse(init.body).action ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `fetch`, but retried once through AnkiConnect's permission popup on a CORS failure. `addNote` is
+ * never retried: AnkiConnect may have added the note before the response was lost.
+ */
+export function createMokuroFetch(url: string): typeof fetch {
   return async (input, init) => {
     try {
       return await fetch(input, init);
     } catch (error) {
       const isCorsFailure = error instanceof TypeError && /failed to fetch/i.test(error.message);
-      if (!isCorsFailure || !(await requestAnkiPermission(url))) {
+      if (
+        !isCorsFailure ||
+        requestAction(init) === 'addNote' ||
+        !(await requestAnkiPermission(url))
+      ) {
         throw error;
       }
       return await fetch(input, init);
     }
   };
+}
+
+/**
+ * Creates a deck (a no-op when it exists), through the permission-aware fetch. AnkiConnect-level
+ * errors are left for `addNote` to report; a connection failure throws.
+ */
+async function createDeck(mokuroFetch: typeof fetch, url: string, deck: string) {
+  const response = await mokuroFetch(url, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'createDeck', params: { deck }, version: 6 })
+  });
+  await response.json().catch(() => null);
 }
 
 /** Anki tags cannot contain spaces (the old `resolveDynamicTags` replaced them the same way). */
@@ -56,17 +83,14 @@ function sanitizeTags(tags: string[]): string[] {
  */
 export function createMokuroAnkiTransport(): AnkiTransport {
   const url = get(settings).ankiConnectSettings.url || DEFAULT_URL;
-  const base = createAnkiConnectTransport({
-    server: url,
-    fetch: createMokuroFetch(url) as never
-  });
+  const mokuroFetch = createMokuroFetch(url);
+  const base = createAnkiConnectTransport({ server: url, fetch: mokuroFetch as never });
 
   const transport: AnkiTransport = {
-    // Decks like `Mining::{series}` may not exist yet, so create the deck first (a no-op when it
-    // exists; unsupported on AnkiConnect Android, where the failure is ignored).
+    // Decks like `Mining::{series}` may not exist yet, so create the deck first.
     async addNote(note) {
       if (note.deckName) {
-        await ankiConnect('createDeck', { deck: note.deckName }, { silent: true });
+        await createDeck(mokuroFetch, url, note.deckName);
       }
       return await base.addNote({ ...note, tags: sanitizeTags(note.tags ?? []) });
     },

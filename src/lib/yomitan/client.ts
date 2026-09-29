@@ -109,7 +109,12 @@ async function removeLegacyDatabase(firstLaunchAfterUpgrade: boolean) {
 }
 
 function persistProfile(client: Yomitan) {
-  saveStoredProfile(client.profile.get());
+  // A full or blocked localStorage must not make the client unusable; the profile stays in memory.
+  try {
+    saveStoredProfile(client.profile.get());
+  } catch (error) {
+    console.error('Failed to save the Yomitan profile:', error);
+  }
 }
 
 /** Persist the profile after every change made through the client. */
