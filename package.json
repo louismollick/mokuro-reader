@@ -65,7 +65,7 @@
   "dependencies": {
     "@types/gapi": "^0.0.47",
     "@vercel/analytics": "^1.5.0",
-    "@yomitan-core/web": "file:vendor/yomitan-core-web-2.0.0-pr.11.36594768781.1.tgz",
+    "@yomitan-core/web": "file:vendor/yomitan-core-web-2.0.0-pr.12.36595850670.1.tgz",
     "@zip.js/zip.js": "^2.7.57",
     "chart.js": "^4.5.1",
     "cropperjs": "^1.6.2",
@@ -76,7 +76,7 @@
     "pica": "^9.0.1",
     "svelte-easy-crop": "^5.0.0",
     "webdav": "^5.8.0",
-    "yomitan-core": "2.0.0-pr.11.36594768781.1"
+    "yomitan-core": "2.0.0-pr.12.36595850670.1"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
