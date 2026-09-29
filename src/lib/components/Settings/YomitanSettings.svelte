@@ -1,74 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { AccordionItem, Button, Toggle } from 'flowbite-svelte';
+  import type { DictionaryOptions, Yomitan } from 'yomitan-core';
   import { updateSetting, settings } from '$lib/settings';
   import { showSnackbar } from '$lib/util/snackbar';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { promptConfirmation } from '$lib/util';
-  import {
-    deleteDictionary,
-    getInstalledDictionaries,
-    importDictionaryZip,
-    type YomitanDictionarySummary
-  } from '$lib/yomitan/core';
-  import {
-    loadDictionaryPreferences,
-    moveDictionaryPreference,
-    normalizeDictionaryPreferences,
-    saveDictionaryPreferences,
-    type DictionaryPreference
-  } from '$lib/yomitan/preferences';
-  import {
-    ALLOWED_RECOMMENDED_DICTIONARY_URLS,
-    buildRecommendedDictionaryProxyUrl,
-    RECOMMENDED_DICTIONARIES
-  } from '$lib/yomitan/recommended-dictionaries';
+  import { getYomitan } from '$lib/yomitan/client';
+  import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
 
-  let installed = $state<YomitanDictionarySummary[]>([]);
-  let preferences = $state<DictionaryPreference[]>([]);
+  /** Installed dictionaries in profile order: this is what lookups search, in this priority. */
+  let dictionaries = $state<DictionaryOptions[]>([]);
   let isRefreshing = $state(false);
   let isInstallingRecommended = $state(false);
-
-  async function fetchWithRetry(url: string, attempts = 3): Promise<Response> {
-    let lastError: unknown = null;
-
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      try {
-        const response = await fetch(url, {
-          cache: 'no-store',
-          redirect: 'follow'
-        });
-        if (response.ok) {
-          return response;
-        }
-
-        if (response.status >= 500 && attempt < attempts) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-          continue;
-        }
-
-        throw new Error(`HTTP ${response.status}`);
-      } catch (error) {
-        lastError = error;
-        if (attempt < attempts) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-          continue;
-        }
-      }
-    }
-
-    throw lastError ?? new Error('Failed to fetch dictionary URL');
-  }
 
   async function refreshDictionaries() {
     isRefreshing = true;
     try {
-      installed = await getInstalledDictionaries();
-      preferences = normalizeDictionaryPreferences(
-        installed.map((item) => item.title),
-        loadDictionaryPreferences()
-      );
-      saveDictionaryPreferences(preferences);
+      const client = await getYomitan();
+      await client.profile.syncDictionaries();
+      dictionaries = client.profile.get().options.dictionaries;
     } catch (error) {
       console.error('Failed to refresh dictionaries:', error);
       showSnackbar('Failed to load Yomitan dictionaries.');
@@ -85,19 +36,39 @@
     updateSetting('yomitanPopupOnTextBoxTap', enabled);
   }
 
-  function updatePreference(title: string, enabled: boolean) {
-    preferences = preferences.map((item) => (item.title === title ? { ...item, enabled } : item));
-    saveDictionaryPreferences(preferences);
+  /** Edits the profile's dictionary list; `client.profile.set` persists it. */
+  async function editDictionaries(edit: (list: DictionaryOptions[]) => void) {
+    try {
+      const client = await getYomitan();
+      const profile = client.profile.get();
+      edit(profile.options.dictionaries);
+      await client.profile.set(profile);
+      dictionaries = client.profile.get().options.dictionaries;
+    } catch (error) {
+      console.error('Failed to update Yomitan dictionaries:', error);
+      showSnackbar('Failed to update Yomitan dictionaries.');
+    }
   }
 
-  function movePreference(index: number, direction: -1 | 1) {
+  function updateEnabled(name: string, enabled: boolean) {
+    return editDictionaries((list) => {
+      const entry = list.find((item) => item.name === name);
+      if (entry) entry.enabled = enabled;
+    });
+  }
+
+  function moveDictionary(index: number, direction: -1 | 1) {
     const targetIndex = index + direction;
-    preferences = moveDictionaryPreference(preferences, index, targetIndex);
-    saveDictionaryPreferences(preferences);
+    return editDictionaries((list) => {
+      if (targetIndex < 0 || targetIndex >= list.length) return;
+      const [item] = list.splice(index, 1);
+      list.splice(targetIndex, 0, item);
+    });
   }
 
-  async function importDictionaryBuffer(
-    arrayBuffer: ArrayBuffer,
+  async function importDictionary(
+    client: Yomitan,
+    source: File | { url: string },
     processId: string,
     label: string,
     position: number,
@@ -110,12 +81,15 @@
       progress: 0
     });
 
-    await importDictionaryZip(arrayBuffer, (progress) => {
-      const percentage = progress.count > 0 ? (progress.index / progress.count) * 100 : 0;
-      progressTrackerStore.updateProcess(processId, {
-        status: `${label} (${position}/${total})`,
-        progress: Math.max(0, Math.min(100, percentage))
-      });
+    await client.dictionaries.import({
+      source: source as never,
+      onProgress: (progress) => {
+        const percentage = progress.count > 0 ? (progress.index / progress.count) * 100 : 0;
+        progressTrackerStore.updateProcess(processId, {
+          status: `${label} (${position}/${total})`,
+          progress: Math.max(0, Math.min(100, percentage))
+        });
+      }
     });
 
     progressTrackerStore.updateProcess(processId, {
@@ -134,23 +108,26 @@
     let failed = 0;
 
     try {
+      const client = await getYomitan();
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         try {
-          const arrayBuffer = await file.arrayBuffer();
-          await importDictionaryBuffer(arrayBuffer, processId, file.name, i + 1, files.length);
+          await importDictionary(client, file, processId, file.name, i + 1, files.length);
           imported++;
         } catch (error) {
           failed++;
           console.error(`Failed importing dictionary ${file.name}:`, error);
         }
       }
+    } catch (error) {
+      failed = files.length - imported;
+      console.error('Failed to open the Yomitan database:', error);
     } finally {
       progressTrackerStore.removeProcess(processId);
       await refreshDictionaries();
 
       if (failed === 0) {
-        showSnackbar(`Imported ${imported} dictionary${imported === 1 ? '' : 'ies'}.`);
+        showSnackbar(`Imported ${imported} dictionar${imported === 1 ? 'y' : 'ies'}.`);
       } else {
         showSnackbar(`Imported ${imported}, failed ${failed}.`);
       }
@@ -161,13 +138,29 @@
   async function handleDeleteDictionary(title: string) {
     promptConfirmation(`Delete dictionary "${title}"?`, async () => {
       try {
-        await deleteDictionary(title);
+        const client = await getYomitan();
+        await client.dictionaries.delete(title);
         await refreshDictionaries();
         showSnackbar(`Deleted ${title}.`);
       } catch (error) {
         console.error(`Failed to delete dictionary ${title}:`, error);
         showSnackbar(`Failed to delete ${title}.`);
       }
+    });
+  }
+
+  /**
+   * mokuro's four recommended dictionaries, resolved against Yomitan's recommended list. One that
+   * the list doesn't carry is imported from its URL directly.
+   */
+  async function resolveRecommended(client: Yomitan) {
+    const listed = await client.dictionaries.recommended('ja').catch(() => []);
+    return RECOMMENDED_DICTIONARIES.map((url) => {
+      const match = listed.find((item) => item.downloadUrl === url);
+      return {
+        url,
+        name: match?.name ?? decodeURIComponent(url.split('/').pop() ?? url).replace(/\.zip$/, '')
+      };
     });
   }
 
@@ -180,35 +173,27 @@
     progressTrackerStore.addProcess({
       id: processId,
       description: 'Installing recommended dictionaries',
-      status: `0 / ${RECOMMENDED_DICTIONARIES.length}`,
+      status: 'Preparing',
       progress: 0
     });
 
     try {
-      for (let i = 0; i < RECOMMENDED_DICTIONARIES.length; i++) {
-        const url = RECOMMENDED_DICTIONARIES[i];
-        const label = url.split('/').pop() || `Dictionary ${i + 1}`;
+      const client = await getYomitan();
+      const recommended = await resolveRecommended(client);
+      const installedTitles = new Set((await client.dictionaries.list()).map((item) => item.title));
+
+      for (let i = 0; i < recommended.length; i++) {
+        const { url, name } = recommended[i];
 
         try {
-          if (!ALLOWED_RECOMMENDED_DICTIONARY_URLS.has(url)) {
-            throw new Error(`Blocked unapproved recommended dictionary URL: ${url}`);
+          if (installedTitles.has(name)) {
+            continue;
           }
 
           progressTrackerStore.updateProcess(processId, {
-            status: `Downloading ${label} (${i + 1}/${RECOMMENDED_DICTIONARIES.length})`
+            status: `Downloading ${name} (${i + 1}/${recommended.length})`
           });
-
-          const response = await fetchWithRetry(buildRecommendedDictionaryProxyUrl(url), 3);
-          const arrayBuffer = await response.arrayBuffer();
-
-          await importDictionaryBuffer(
-            arrayBuffer,
-            processId,
-            label,
-            i + 1,
-            RECOMMENDED_DICTIONARIES.length
-          );
-
+          await importDictionary(client, { url }, processId, name, i + 1, recommended.length);
           imported++;
         } catch (error) {
           failed++;
@@ -216,10 +201,13 @@
         }
 
         progressTrackerStore.updateProcess(processId, {
-          progress: ((i + 1) / RECOMMENDED_DICTIONARIES.length) * 100,
-          status: `${i + 1} / ${RECOMMENDED_DICTIONARIES.length}`
+          progress: ((i + 1) / recommended.length) * 100,
+          status: `${i + 1} / ${recommended.length}`
         });
       }
+    } catch (error) {
+      failed = RECOMMENDED_DICTIONARIES.length - imported;
+      console.error('Failed installing recommended dictionaries:', error);
     } finally {
       isInstallingRecommended = false;
       progressTrackerStore.removeProcess(processId);
@@ -275,21 +263,21 @@
 
       {#if isRefreshing}
         <p class="text-xs text-gray-400">Loading dictionaries...</p>
-      {:else if preferences.length === 0}
+      {:else if dictionaries.length === 0}
         <p class="text-xs text-gray-400">No dictionaries installed.</p>
       {:else}
         <div class="flex flex-col gap-2">
-          {#each preferences as preference, index (preference.title)}
+          {#each dictionaries as dictionary, index (dictionary.name)}
             <div class="rounded border border-gray-700 p-2">
               <div class="mb-2 text-sm font-medium text-gray-900 dark:text-white">
-                {preference.title}
+                {dictionary.name}
               </div>
               <div class="flex flex-wrap items-center gap-2">
                 <Toggle
-                  checked={preference.enabled}
+                  checked={dictionary.enabled}
                   onchange={(event) =>
-                    updatePreference(
-                      preference.title,
+                    updateEnabled(
+                      dictionary.name,
                       (event.currentTarget as HTMLInputElement).checked
                     )}>Enabled</Toggle
                 >
@@ -297,19 +285,19 @@
                   size="xs"
                   color="alternative"
                   disabled={index === 0}
-                  onclick={() => movePreference(index, -1)}>Up</Button
+                  onclick={() => moveDictionary(index, -1)}>Up</Button
                 >
                 <Button
                   size="xs"
                   color="alternative"
-                  disabled={index === preferences.length - 1}
-                  onclick={() => movePreference(index, 1)}>Down</Button
+                  disabled={index === dictionaries.length - 1}
+                  onclick={() => moveDictionary(index, 1)}>Down</Button
                 >
                 <Button
                   size="xs"
                   color="red"
                   outline
-                  onclick={() => handleDeleteDictionary(preference.title)}>Delete</Button
+                  onclick={() => handleDeleteDictionary(dictionary.name)}>Delete</Button
                 >
               </div>
             </div>
