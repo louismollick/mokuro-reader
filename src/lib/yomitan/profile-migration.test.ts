@@ -3,7 +3,7 @@ import type { AnkiConnectSettings } from '$lib/settings/settings';
 import type { Profile } from 'yomitan-core';
 import {
   applyLegacySettingsToProfile,
-  applyPendingDictionaryPreference
+  applyPendingDictionaryPreferences
 } from './profile-migration';
 
 function baseAnkiSettings(overrides: Partial<AnkiConnectSettings> = {}): AnkiConnectSettings {
@@ -126,35 +126,36 @@ describe('applyLegacySettingsToProfile', () => {
   });
 });
 
-describe('applyPendingDictionaryPreference', () => {
+describe('applyPendingDictionaryPreferences', () => {
   function profileWith(...entries: Array<[string, boolean]>): Profile {
     const profile = baseProfile();
     profile.options.dictionaries = entries.map(([name, enabled]) => ({ name, enabled })) as never;
     return profile;
   }
 
-  it('applies the legacy disabled flag to a re-imported dictionary and consumes it', () => {
+  it('applies legacy flags to re-imported dictionaries and consumes only those', () => {
     const profile = profileWith(['JMdict', true], ['KANJIDIC', true]);
     const pending = [
       { title: 'JMdict', enabled: false },
-      { title: 'KANJIDIC', enabled: true }
+      { title: 'KANJIDIC', enabled: true },
+      { title: 'NotYet', enabled: false }
     ];
 
-    const result = applyPendingDictionaryPreference(profile, 'JMdict', pending);
+    const result = applyPendingDictionaryPreferences(profile, pending);
 
     expect(profile.options.dictionaries.map((d) => [d.name, d.enabled])).toEqual([
       ['JMdict', false],
       ['KANJIDIC', true]
     ]);
     expect(result.changed).toBe(true);
-    expect(result.pending).toEqual([{ title: 'KANJIDIC', enabled: true }]);
+    expect(result.pending).toEqual([{ title: 'NotYet', enabled: false }]);
   });
 
-  it('ignores dictionaries with no pending preference', () => {
+  it('keeps a flag pending while its dictionary is missing from the profile', () => {
     const profile = profileWith(['NewDict', true]);
     const pending = [{ title: 'JMdict', enabled: false }];
 
-    const result = applyPendingDictionaryPreference(profile, 'NewDict', pending);
+    const result = applyPendingDictionaryPreferences(profile, pending);
 
     expect(result.changed).toBe(false);
     expect(result.pending).toBe(pending);

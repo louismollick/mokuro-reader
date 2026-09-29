@@ -7,7 +7,7 @@
  *
  * Dictionary enabled flags cannot be converted up front: dictionaries are re-imported into the new
  * storage, so the legacy flags stay around as pending preferences and are applied to each
- * dictionary's profile entry as it is imported (`applyPendingDictionaryPreference`).
+ * dictionary's profile entry as it is imported (`applyPendingDictionaryPreferences`).
  */
 import type { AnkiConnectSettings } from '$lib/settings/settings';
 import type { Profile } from 'yomitan-core';
@@ -67,20 +67,21 @@ export function applyLegacySettingsToProfile(
 }
 
 /**
- * Applies a pending legacy enabled flag to the profile entry of a freshly imported dictionary.
- * Returns the preferences that are still pending (the matched one is consumed, so a later
- * delete-and-reimport does not override what the user chose since), and whether the profile changed.
+ * Applies pending legacy enabled flags to the dictionaries now in the profile. A flag is consumed
+ * only once its dictionary's entry exists (so a later delete-and-reimport doesn't override what the
+ * user chose since); flags for dictionaries not re-imported yet stay pending.
  */
-export function applyPendingDictionaryPreference(
+export function applyPendingDictionaryPreferences(
   profile: Profile,
-  title: string,
   pending: DictionaryPreference[]
 ): { pending: DictionaryPreference[]; changed: boolean } {
-  const preference = pending.find((item) => item.title === title);
-  if (!preference) return { pending, changed: false };
-
-  const entry = profile.options.dictionaries.find((dictionary) => dictionary.name === title);
-  const changed = !!entry && entry.enabled !== preference.enabled;
-  if (entry) entry.enabled = preference.enabled;
-  return { pending: pending.filter((item) => item !== preference), changed };
+  let changed = false;
+  const remaining = pending.filter((preference) => {
+    const entry = profile.options.dictionaries.find(({ name }) => name === preference.title);
+    if (!entry) return true;
+    changed ||= entry.enabled !== preference.enabled;
+    entry.enabled = preference.enabled;
+    return false;
+  });
+  return { pending: remaining.length === pending.length ? pending : remaining, changed };
 }

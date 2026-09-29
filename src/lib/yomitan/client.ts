@@ -10,7 +10,7 @@ import { settings } from '$lib/settings';
 import { showSnackbar } from '$lib/util/snackbar';
 import {
   applyLegacySettingsToProfile,
-  applyPendingDictionaryPreference
+  applyPendingDictionaryPreferences
 } from './profile-migration';
 import { loadDictionaryPreferences, saveDictionaryPreferences } from './preferences';
 import {
@@ -89,15 +89,16 @@ async function removeLegacyDatabase(firstLaunchAfterUpgrade: boolean) {
       if (!existed) return;
     }
 
-    await deleteDatabase(LEGACY_DATABASE_NAME);
     // Without `indexedDB.databases()` we can't tell it existed; only the first launch after the
-    // upgrade can have had 1.x data, so notify then.
+    // upgrade can have had 1.x data, so notify then. Notify before deleting: another tab still on
+    // 1.x blocks the deletion until it closes.
     if (existed ?? firstLaunchAfterUpgrade) {
       showSnackbar(
         'Yomitan was upgraded. Please re-import your dictionaries in Settings > Yomitan.',
         10000
       );
     }
+    await deleteDatabase(LEGACY_DATABASE_NAME);
   } catch (error) {
     console.error('Failed to remove the legacy Yomitan database:', error);
   }
@@ -128,14 +129,7 @@ function persistOnChange(client: Yomitan) {
     const installed = await originalImport(options);
 
     // A re-imported dictionary keeps the enabled flag it had before the upgrade.
-    await editProfile((options) => {
-      const { pending } = applyPendingDictionaryPreference(
-        { options } as never,
-        installed.title,
-        loadDictionaryPreferences()
-      );
-      saveDictionaryPreferences(pending);
-    });
+    await applyPendingPreferences(client);
     return installed;
   };
 
@@ -170,6 +164,8 @@ async function createClient(): Promise<Yomitan> {
   persistProfile(client);
   markLegacySettingsMigrated();
   persistOnChange(client);
+  // Flags a lost race left pending are applied on the next start.
+  await applyPendingPreferences(client);
 
   void removeLegacyDatabase(firstLaunchAfterUpgrade);
   return client;
@@ -177,16 +173,38 @@ async function createClient(): Promise<Yomitan> {
 
 let editQueue: Promise<unknown> = Promise.resolve();
 
+/** Applies legacy enabled flags to re-imported dictionaries, through the edit queue. */
+async function applyPendingPreferences(client: Yomitan) {
+  if (loadDictionaryPreferences().length === 0) return;
+  await queueEdit(
+    () => client,
+    (options) => {
+      const { pending } = applyPendingDictionaryPreferences(
+        { options } as never,
+        loadDictionaryPreferences()
+      );
+      saveDictionaryPreferences(pending);
+    }
+  );
+}
+
 /**
  * Serializes profile edits: each one reads the latest profile, edits it and saves it inside a
  * shared chain, so concurrent edits never overwrite each other.
  */
 export function editProfile(edit: (options: ProfileOptions) => void): Promise<void> {
+  return queueEdit(getYomitan, edit);
+}
+
+function queueEdit(
+  getClient: () => Yomitan | Promise<Yomitan>,
+  edit: (options: ProfileOptions) => void
+): Promise<void> {
   const run = editQueue.then(async () => {
-    const client = await getYomitan();
-    const profile = client.profile.get();
+    const yomitan = await getClient();
+    const profile = yomitan.profile.get();
     edit(profile.options);
-    await client.profile.set(profile);
+    await yomitan.profile.set(profile);
   });
   editQueue = run.catch(() => {});
   return run;

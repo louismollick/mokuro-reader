@@ -33,7 +33,7 @@ vi.mock('$lib/settings', () => ({
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('./profile-migration', () => ({
   applyLegacySettingsToProfile: (profile: unknown) => profile,
-  applyPendingDictionaryPreference: (_p: unknown, _t: string, pending: unknown[]) => ({
+  applyPendingDictionaryPreferences: (_p: unknown, pending: unknown[]) => ({
     pending,
     changed: false
   })
