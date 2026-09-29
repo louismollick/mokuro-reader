@@ -12,7 +12,11 @@ import {
   applyLegacySettingsToProfile,
   applyPendingDictionaryPreferences
 } from './profile-migration';
-import { loadDictionaryPreferences, saveDictionaryPreferences } from './preferences';
+import {
+  loadDictionaryPreferences,
+  saveDictionaryPreferences,
+  type DictionaryPreference
+} from './preferences';
 import {
   loadStoredProfile,
   markLegacySettingsMigrated,
@@ -176,16 +180,18 @@ let editQueue: Promise<unknown> = Promise.resolve();
 /** Applies legacy enabled flags to re-imported dictionaries, through the edit queue. */
 async function applyPendingPreferences(client: Yomitan) {
   if (loadDictionaryPreferences().length === 0) return;
+  let remaining = null as DictionaryPreference[] | null;
   await queueEdit(
     () => client,
     (options) => {
-      const { pending } = applyPendingDictionaryPreferences(
+      remaining = applyPendingDictionaryPreferences(
         { options } as never,
         loadDictionaryPreferences()
-      );
-      saveDictionaryPreferences(pending);
+      ).pending;
     }
   );
+  // Consumed only once the profile holding the flags is saved.
+  if (remaining !== null) saveDictionaryPreferences(remaining);
 }
 
 /**

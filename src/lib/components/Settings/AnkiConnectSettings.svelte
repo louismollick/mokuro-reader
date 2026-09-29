@@ -213,10 +213,26 @@
     }
   }
 
+  let modelFieldsRequest = 0;
+
   async function loadPopupModelFields(modelName: string) {
+    const request = ++modelFieldsRequest;
     const fields = await getModelFieldNames(modelName);
-    // A failed request returns []; keep the existing mapping rather than erasing it.
-    if (fields.length === 0) return;
+    // A newer model selection wins over this (slower) request.
+    if (request !== modelFieldsRequest) return;
+    if (fields.length === 0) {
+      // A failed request returns []: keep the mapping of the same model, but still save a newly
+      // selected model (its old fields belong to the previous note type).
+      await editProfile((options) => {
+        const format = ensureCardFormat(options);
+        if (format.model !== modelName) {
+          format.model = modelName;
+          format.name = modelName || format.name;
+          format.fields = {} as typeof format.fields;
+        }
+      });
+      return;
+    }
     popupModelFields = fields;
     // Only the model's own fields, keeping the values already mapped for them.
     popupFieldMappings = Object.fromEntries(
