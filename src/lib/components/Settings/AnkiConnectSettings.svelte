@@ -20,7 +20,7 @@
     openConfigureModal
   } from '$lib/anki-connect';
   import type { ProfileOptions } from 'yomitan-core';
-  import { getYomitan } from '$lib/yomitan/client';
+  import { editProfile, getYomitan } from '$lib/yomitan/client';
   import { onMount } from 'svelte';
 
   let connectionData = $derived($settings.ankiConnectSettings.connectionData);
@@ -54,14 +54,6 @@
     { value: 'overwrite', name: 'Overwrite the existing note' },
     { value: 'prevent', name: 'Prevent duplicates' }
   ];
-
-  /** Edits the profile and persists it (`client.profile.set` saves it). */
-  async function editProfile(edit: (options: ProfileOptions) => void) {
-    const client = await getYomitan();
-    const profile = client.profile.get();
-    edit(profile.options);
-    await client.profile.set(profile);
-  }
 
   function ensureCardFormat(options: ProfileOptions) {
     if (!options.anki.cardFormats[0]) {
@@ -222,7 +214,10 @@
   }
 
   async function loadPopupModelFields(modelName: string) {
-    popupModelFields = await getModelFieldNames(modelName);
+    const fields = await getModelFieldNames(modelName);
+    // A failed request returns []; keep the existing mapping rather than erasing it.
+    if (fields.length === 0) return;
+    popupModelFields = fields;
     // Only the model's own fields, keeping the values already mapped for them.
     popupFieldMappings = Object.fromEntries(
       popupModelFields.map((field) => [field, popupFieldMappings[field] ?? ''])

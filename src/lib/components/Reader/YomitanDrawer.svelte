@@ -57,7 +57,8 @@
   let selectionMessage = $state('');
   let currentSelection = $state<DrawerSelectionState | null>(null);
   let viewStack = $state.raw<DrawerSearchView[]>([]);
-  let navigationRequestId = $state(0);
+  let navigationRequestId = 0;
+  let loadGeneration = 0;
   let viewIdCounter = $state(0);
   let drawerPanel: HTMLElement | null = $state(null);
   let tokenSelectionRoot: HTMLElement | null = $state(null);
@@ -226,7 +227,9 @@
     lookupLoading = false;
     currentSelection = null;
     viewStack = [];
-    navigationRequestId = 0;
+    // Both counters stay monotonic so results from before a reset are always stale.
+    navigationRequestId += 1;
+    loadGeneration += 1;
     viewIdCounter = 0;
     clearNativeSelection();
   }
@@ -471,14 +474,18 @@
       return;
     }
 
+    const generation = ++loadGeneration;
+    const isStale = () => generation !== loadGeneration;
     loading = true;
     errorMessage = '';
 
     try {
       const yomitan = await getYomitan();
+      if (isStale()) return;
       client = yomitan;
 
       const installed = await yomitan.dictionaries.list();
+      if (isStale()) return;
       if (installed.length === 0) {
         errorMessage = 'No Yomitan dictionaries installed. Add dictionaries in Settings > Yomitan.';
         return;
@@ -489,7 +496,9 @@
         return;
       }
 
-      tokens = await yomitan.lookup.parse(text);
+      const parsed = await yomitan.lookup.parse(text);
+      if (isStale()) return;
+      tokens = parsed;
       if (tokens.length === 0) {
         errorMessage = 'No tokens found for this text.';
         return;
@@ -505,10 +514,11 @@
         selectionMessage = 'No selectable words found for this text.';
       }
     } catch (error) {
+      if (isStale()) return;
       console.error('Yomitan tokenization failed:', error);
       errorMessage = 'Failed to initialize Yomitan.';
     } finally {
-      loading = false;
+      if (!isStale()) loading = false;
     }
   }
 
@@ -570,21 +580,46 @@
     }
   }
 
-  /** The sentence for a query that is not a range of the text box (selections, dictionary links). */
-  function sentenceForQuery(query: string): Sentence {
-    return client?.lookup.sentence(query, 0, query.length) ?? { text: query, offset: 0 };
+  /**
+   * The sentence for a query that isn't a token: taken from the text box when the query occurs in
+   * it (at `hint` if the selection position is known, else the first occurrence), otherwise from
+   * the query alone.
+   */
+  function sentenceForQuery(query: string, rootText: string, hint?: number): Sentence {
+    if (!client) return { text: query, offset: 0 };
+    let index = hint !== undefined && rootText.startsWith(query, hint) ? hint : -1;
+    if (index < 0) index = rootText.indexOf(query);
+    return index >= 0
+      ? client.lookup.sentence(rootText, index, query.length)
+      : client.lookup.sentence(query, 0, query.length);
+  }
+
+  /** The text-box offset of the token holding the start of the native selection, if any. */
+  function selectionTokenStart(): number | undefined {
+    const selection = window.getSelection();
+    const node = selection?.anchorNode;
+    const element = node instanceof Element ? node : node?.parentElement;
+    const index = Number(element?.closest<HTMLElement>('[data-token-index]')?.dataset.tokenIndex);
+    if (!Number.isInteger(index) || !tokens[index]) return undefined;
+    // Within one token the offset narrows the position; across tokens the token start is used.
+    const within =
+      selection && selection.anchorNode === selection.focusNode
+        ? Math.min(selection.anchorOffset, selection.focusOffset)
+        : 0;
+    return tokens[index].range.start + within;
   }
 
   async function handleLinkClick(query: string) {
     const text = query.trim();
     if (!text) return;
 
+    const rootSourceText = currentView?.rootSourceText || getRootSourceText();
     await runTermLookup({
       query: text,
       tokenIndex: null,
       popupSourceText: text,
-      rootSourceText: currentView?.rootSourceText || getRootSourceText(),
-      sentence: sentenceForQuery(text),
+      rootSourceText,
+      sentence: sentenceForQuery(text, rootSourceText),
       mode: 'push',
       pushOnEmpty: true
     });
@@ -595,12 +630,19 @@
 
     const selection = currentSelection.text;
     const previousView = currentView;
+    const rootSourceText = previousView?.rootSourceText || getRootSourceText();
+    // A token-bar selection maps onto the text box; use its position when we can.
+    let hint: number | undefined;
+    if (currentSelection.origin === 'tokens') {
+      const start = selectionTokenStart();
+      if (start !== undefined) hint = start;
+    }
     const termResult = await runTermLookup({
       query: selection,
       tokenIndex: null,
       popupSourceText: selection,
-      rootSourceText: previousView?.rootSourceText || getRootSourceText(),
-      sentence: sentenceForQuery(selection),
+      rootSourceText,
+      sentence: sentenceForQuery(selection, rootSourceText, hint),
       mode: 'push',
       pushOnEmpty: true
     });
@@ -743,14 +785,16 @@
                 {#if isSelectable(token)}
                   <button
                     type="button"
+                    data-token-index={index}
                     class={`inline appearance-none rounded-sm border-0 bg-transparent px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors select-text hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 ${selectedTokenIndex === index ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
                     onclick={() => handleTokenClick(token, index)}
                   >
                     {token.text}
                   </button>
                 {:else}
-                  <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200"
-                    >{token.text}</span
+                  <span
+                    data-token-index={index}
+                    class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span
                   >
                 {/if}
               {/each}

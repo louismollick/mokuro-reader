@@ -36,7 +36,14 @@ vi.mock('$lib/settings', () => ({
   updateSetting: settingsMocks.updateSetting
 }));
 
-vi.mock('$lib/yomitan/client', () => ({ getYomitan: async () => clientMock }));
+vi.mock('$lib/yomitan/client', () => ({
+  getYomitan: async () => clientMock,
+  editProfile: async (edit: (options: unknown) => void) => {
+    const profile = clientMock.profile.get();
+    edit(profile.options);
+    await clientMock.profile.set(profile);
+  }
+}));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('$lib/util/progress-tracker', () => ({
   progressTrackerStore: { addProcess: vi.fn(), updateProcess: vi.fn(), removeProcess: vi.fn() }

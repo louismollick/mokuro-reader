@@ -6,7 +6,7 @@
   import { showSnackbar } from '$lib/util/snackbar';
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { promptConfirmation } from '$lib/util';
-  import { getYomitan } from '$lib/yomitan/client';
+  import { editProfile, getYomitan } from '$lib/yomitan/client';
   import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
 
   /** Installed dictionaries in profile order: this is what lookups search, in this priority. */
@@ -36,14 +36,11 @@
     updateSetting('yomitanPopupOnTextBoxTap', enabled);
   }
 
-  /** Edits the profile's dictionary list; `client.profile.set` persists it. */
+  /** Edits the profile's dictionary list through the serialized profile queue. */
   async function editDictionaries(edit: (list: DictionaryOptions[]) => void) {
     try {
-      const client = await getYomitan();
-      const profile = client.profile.get();
-      edit(profile.options.dictionaries);
-      await client.profile.set(profile);
-      dictionaries = client.profile.get().options.dictionaries;
+      await editProfile((options) => edit(options.dictionaries));
+      dictionaries = (await getYomitan()).profile.get().options.dictionaries;
     } catch (error) {
       console.error('Failed to update Yomitan dictionaries:', error);
       showSnackbar('Failed to update Yomitan dictionaries.');

@@ -500,7 +500,32 @@ describe('YomitanDrawer', () => {
       });
     });
 
-    it('uses the nested selection query as the Anki note context', async () => {
+    it('keeps the text-box sentence for a selection that occurs in the text box', async () => {
+      clientMock.lookup.parse.mockResolvedValue([word('学校'), word('で', 2), word('学生', 3)]);
+      clientMock.lookup.terms.mockImplementation(async (query: string) => ({
+        entries: [{ label: query === '学校' ? '学生' : `term-${query}` }],
+        originalTextLength: query.length
+      }));
+
+      const view = render(YomitanDrawer, {
+        open: true,
+        sourceText: '学校で学生',
+        ankiEnabled: true
+      });
+
+      await waitFor(() => expect(resultsText(view.container)?.textContent).toBe('学生'));
+      setSelection(resultsText(view.container));
+      await fireEvent.click(
+        await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+      );
+
+      await waitFor(() => {
+        expect(resultsElement(view.container).noteContext.query).toBe('学生');
+        expect(clientMock.lookup.sentence).toHaveBeenCalledWith('学校で学生', 3, 2);
+      });
+    });
+
+    it('falls back to a query-only sentence when the query is not in the text box', async () => {
       clientMock.lookup.parse.mockResolvedValue([word('学校')]);
       clientMock.lookup.terms.mockImplementation(async (query: string) => ({
         entries: [{ label: query === '学校' ? '学生' : `term-${query}` }],
@@ -515,10 +540,42 @@ describe('YomitanDrawer', () => {
         await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
       );
 
-      await waitFor(() => {
-        expect(resultsElement(view.container).noteContext.query).toBe('学生');
-        expect(clientMock.lookup.sentence).toHaveBeenCalledWith('学生', 0, 2);
-      });
+      await waitFor(() => expect(clientMock.lookup.sentence).toHaveBeenCalledWith('学生', 0, 2));
     });
+  });
+
+  it('link-click uses the text-box sentence when the query occurs in it', async () => {
+    clientMock.lookup.parse.mockResolvedValue([word('学校'), word('生', 2)]);
+
+    const { container } = render(YomitanDrawer, { open: true, sourceText: '学校生' });
+
+    await waitFor(() => expect(resultsElement(container).textContent).toBeTruthy());
+    resultsElement(container).dispatchEvent(
+      new CustomEvent('link-click', { detail: { query: '生', href: 'yomitan://x' } })
+    );
+
+    await waitFor(() => expect(clientMock.lookup.sentence).toHaveBeenCalledWith('学校生', 2, 1));
+  });
+
+  it('ignores an in-flight load from a box that was closed and reopened with another', async () => {
+    let resolveA: (tokens: Token[]) => void = () => {};
+    clientMock.lookup.parse.mockImplementation((text: string) =>
+      text === 'あ'
+        ? new Promise<Token[]>((resolve) => (resolveA = resolve))
+        : Promise.resolve([word('い')])
+    );
+
+    const view = render(YomitanDrawer, { open: true, sourceText: 'あ' });
+    await waitFor(() => expect(clientMock.lookup.parse).toHaveBeenCalledWith('あ'));
+
+    await view.rerender({ open: false, sourceText: 'あ' });
+    await view.rerender({ open: true, sourceText: 'い' });
+    await waitFor(() => expect(view.getByText('い')).toBeTruthy());
+
+    resolveA([word('あ')]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(view.queryByText('あ')).toBeNull();
+    expect(view.getByText('い')).toBeTruthy();
   });
 });

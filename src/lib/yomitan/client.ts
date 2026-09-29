@@ -4,7 +4,7 @@
  * is persisted to localStorage after every change and restored on startup.
  */
 import { get } from 'svelte/store';
-import { createYomitan, type Yomitan } from 'yomitan-core';
+import { createYomitan, type ProfileOptions, type Yomitan } from 'yomitan-core';
 import { createBrowserImageInfoReader, createIndexedDbStorage } from '@yomitan-core/web';
 import { settings } from '$lib/settings';
 import { showSnackbar } from '$lib/util/snackbar';
@@ -81,7 +81,7 @@ function deleteDatabase(name: string): Promise<void> {
 }
 
 /** Deletes the 1.x database, telling the user once (if we can tell it existed) to re-import. */
-async function removeLegacyDatabase() {
+async function removeLegacyDatabase(firstLaunchAfterUpgrade: boolean) {
   try {
     let existed: boolean | null = null;
     if (typeof indexedDB.databases === 'function') {
@@ -90,7 +90,9 @@ async function removeLegacyDatabase() {
     }
 
     await deleteDatabase(LEGACY_DATABASE_NAME);
-    if (existed) {
+    // Without `indexedDB.databases()` we can't tell it existed; only the first launch after the
+    // upgrade can have had 1.x data, so notify then.
+    if (existed ?? firstLaunchAfterUpgrade) {
       showSnackbar(
         'Yomitan was upgraded. Please re-import your dictionaries in Settings > Yomitan.',
         10000
@@ -126,18 +128,14 @@ function persistOnChange(client: Yomitan) {
     const installed = await originalImport(options);
 
     // A re-imported dictionary keeps the enabled flag it had before the upgrade.
-    const next = client.profile.get();
-    const { pending, changed } = applyPendingDictionaryPreference(
-      next,
-      installed.title,
-      loadDictionaryPreferences()
-    );
-    saveDictionaryPreferences(pending);
-    if (changed) {
-      await client.profile.set(next);
-    } else {
-      persistProfile(client);
-    }
+    await editProfile((options) => {
+      const { pending } = applyPendingDictionaryPreference(
+        { options } as never,
+        installed.title,
+        loadDictionaryPreferences()
+      );
+      saveDictionaryPreferences(pending);
+    });
     return installed;
   };
 
@@ -160,20 +158,38 @@ async function createClient(): Promise<Yomitan> {
     profile: stored
   });
 
-  if (stored === undefined && needsLegacySettingsMigration()) {
+  const firstLaunchAfterUpgrade = needsLegacySettingsMigration();
+  if (stored === undefined && firstLaunchAfterUpgrade) {
     const profile = applyLegacySettingsToProfile(
       client.profile.get(),
       get(settings).ankiConnectSettings
     );
     await client.profile.set(profile);
   }
-  markLegacySettingsMigrated();
   await client.profile.syncDictionaries();
   persistProfile(client);
+  markLegacySettingsMigrated();
   persistOnChange(client);
 
-  void removeLegacyDatabase();
+  void removeLegacyDatabase(firstLaunchAfterUpgrade);
   return client;
+}
+
+let editQueue: Promise<unknown> = Promise.resolve();
+
+/**
+ * Serializes profile edits: each one reads the latest profile, edits it and saves it inside a
+ * shared chain, so concurrent edits never overwrite each other.
+ */
+export function editProfile(edit: (options: ProfileOptions) => void): Promise<void> {
+  const run = editQueue.then(async () => {
+    const client = await getYomitan();
+    const profile = client.profile.get();
+    edit(profile.options);
+    await client.profile.set(profile);
+  });
+  editQueue = run.catch(() => {});
+  return run;
 }
 
 /** The shared client. Browser only; the first call opens the database and restores the profile. */
