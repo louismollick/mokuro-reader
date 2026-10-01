@@ -170,6 +170,10 @@ async function createClient(): Promise<Yomitan> {
     await client.profile.set(profile);
   }
   await client.profile.syncDictionaries();
+  // Mokuro owns the integration toggle, including for profiles saved before this was synced.
+  const profile = client.profile.get();
+  profile.options.anki.enable = get(settings).ankiConnectSettings.enabled;
+  await client.profile.set(profile);
   persistProfile(client);
   markLegacySettingsMigrated();
   persistOnChange(client);

@@ -1,6 +1,8 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ profile: { options: { tags: [] as string[] } } }));
+const state = vi.hoisted(() => ({
+  profile: { options: { tags: [] as string[], anki: { enable: false } } }
+}));
 
 vi.mock('yomitan-core', () => ({
   createYomitan: async () => ({
@@ -25,7 +27,7 @@ vi.mock('@yomitan-core/web', () => ({
 vi.mock('$lib/settings', () => ({
   settings: {
     subscribe: (run: (value: unknown) => void) => {
-      run({ ankiConnectSettings: {} });
+      run({ ankiConnectSettings: { enabled: true } });
       return () => {};
     }
   }
@@ -39,11 +41,16 @@ vi.mock('./profile-migration', () => ({
   })
 }));
 
-import { editProfile } from './client';
+import { editProfile, getYomitan } from './client';
 
 describe('editProfile', () => {
   beforeAll(() => {
     vi.stubGlobal('indexedDB', { databases: async () => [] });
+  });
+
+  it('enables popup Anki actions when the mokuro integration is enabled', async () => {
+    const client = await getYomitan();
+    expect(client.profile.get().options.anki.enable).toBe(true);
   });
 
   it('serializes concurrent edits so both land', async () => {

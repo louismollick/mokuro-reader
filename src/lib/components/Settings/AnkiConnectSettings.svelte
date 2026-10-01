@@ -152,6 +152,9 @@
 
       updateAnkiSetting('connectionData', data);
       updateAnkiSetting('enabled', true);
+      await editProfile((options) => {
+        options.anki.enable = true;
+      });
 
       if (!selectedModel && data.models.length > 0) {
         selectedModel = data.models[0];
@@ -167,6 +170,9 @@
   function handleDisconnect() {
     updateAnkiSetting('connectionData', null);
     updateAnkiSetting('enabled', false);
+    void editProfile((options) => {
+      options.anki.enable = false;
+    });
     popupDecks = [];
     popupModels = [];
     popupModelFields = [];
