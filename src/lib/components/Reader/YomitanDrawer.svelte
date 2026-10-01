@@ -300,13 +300,25 @@
     }
 
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+    if (!selection) {
       currentSelection = null;
       return;
     }
 
-    const anchorOrigin = resolveSelectionOrigin(selection.anchorNode);
-    const focusOrigin = resolveSelectionOrigin(selection.focusNode);
+    // Chromium retargets mouse selections inside shadow DOM to a collapsed range on the host's
+    // parent. Composed ranges expose the actual endpoints when we supply the entries' shadow root.
+    const shadowRoot = entriesElement?.shadowRoot;
+    const range = selection.getComposedRanges?.({ shadowRoots: shadowRoot ? [shadowRoot] : [] })[0];
+    const isCollapsed = range
+      ? range.startContainer === range.endContainer && range.startOffset === range.endOffset
+      : selection.isCollapsed;
+    if ((!range && selection.rangeCount === 0) || isCollapsed) {
+      currentSelection = null;
+      return;
+    }
+
+    const anchorOrigin = resolveSelectionOrigin(range?.startContainer ?? selection.anchorNode);
+    const focusOrigin = resolveSelectionOrigin(range?.endContainer ?? selection.focusNode);
     if (!anchorOrigin || anchorOrigin !== focusOrigin) {
       currentSelection = null;
       return;
