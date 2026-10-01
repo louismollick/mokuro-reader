@@ -1,19 +1,21 @@
 <script lang="ts">
+  import { onDestroy, onMount } from 'svelte';
   import { Button, Drawer } from 'flowbite-svelte';
   import { ArrowLeftOutline, BookOpenSolid } from 'flowbite-svelte-icons';
   import { sineIn } from 'svelte/easing';
-  import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
-  import type { VolumeMetadata } from '$lib/anki-connect';
   import {
-    buildEnabledKanjiDictionaryMap,
-    buildEnabledDictionaryMap,
-    getInstalledDictionaries,
-    lookupKanji,
-    lookupTerm,
-    tokenizeText,
-    type YomitanDictionarySummary,
-    type YomitanToken
-  } from '$lib/yomitan/core';
+    createDisplayController,
+    type KanjiDictionaryEntry,
+    type ParseToken,
+    type Sentence,
+    type TermDictionaryEntry,
+    type Yomitan
+  } from 'yomitan-core';
+  import { defineYomitanEntries, type YomitanEntriesElement } from '@yomitan-core/web';
+  import { syncAnkiWeb, type VolumeMetadata } from '$lib/anki-connect';
+  import { settings } from '$lib/settings';
+  import { getYomitan } from '$lib/yomitan/client';
+  import { createMokuroAnkiTransport } from '$lib/yomitan/anki-transport';
   import {
     type DrawerSearchView,
     type DrawerSelectionOrigin,
@@ -23,23 +25,7 @@
     isJapaneseSelection,
     getSelectionCodePointLength
   } from '$lib/yomitan/drawer-state';
-  import type { YomitanAnkiButtonUiState } from '$lib/yomitan/anki-button-ui';
-  import {
-    buildYomitanDebugSnapshot,
-    copyTextToClipboard,
-    getCodePointPreview,
-    isYomitanDebugEnabled,
-    logYomitanDebug
-  } from '$lib/yomitan/debug';
-  import {
-    loadDictionaryPreferences,
-    normalizeDictionaryPreferences,
-    saveDictionaryPreferences
-  } from '$lib/yomitan/preferences';
-  import { addPopupAnkiNote, getPopupAnkiButtonStates } from '$lib/yomitan/anki-note';
   import { showSnackbar } from '$lib/util/snackbar';
-  import YomitanKanjiResults from './YomitanKanjiResults.svelte';
-  import YomitanResults from './YomitanResults.svelte';
 
   interface Props {
     open?: boolean;
@@ -61,8 +47,8 @@
     allowSwipeClose: _allowSwipeClose = true
   }: Props = $props();
 
-  let dictionaries = $state<YomitanDictionarySummary[]>([]);
-  let tokens = $state<YomitanToken[]>([]);
+  let client = $state.raw<Yomitan | null>(null);
+  let tokens = $state.raw<ParseToken[]>([]);
   let selectedTokenIndex = $state<number | null>(null);
   let loading = $state(false);
   let lookupLoading = $state(false);
@@ -70,14 +56,14 @@
   let noticeMessage = $state('');
   let selectionMessage = $state('');
   let currentSelection = $state<DrawerSelectionState | null>(null);
-  let viewStack = $state<DrawerSearchView[]>([]);
-  let navigationRequestId = $state(0);
+  let viewStack = $state.raw<DrawerSearchView[]>([]);
+  let navigationRequestId = 0;
+  let loadGeneration = 0;
   let viewIdCounter = $state(0);
-  let ankiPrecheckWarningShown = $state(false);
   let drawerPanel: HTMLElement | null = $state(null);
   let tokenSelectionRoot: HTMLElement | null = $state(null);
   let resultsSelectionRoot: HTMLElement | null = $state(null);
-  let debugEnabled = $state(false);
+  let entriesElement: YomitanEntriesElement | null = $state.raw(null);
   let currentView = $derived.by(() => viewStack.at(-1) ?? null);
   let canGoBack = $derived(viewStack.length > 1);
   let noEntries = $derived(currentView?.kind === 'term' && currentView.entries.length === 0);
@@ -88,14 +74,92 @@
 
     return 'No dictionary entries found for this token.';
   });
+
+  // Rebuilt whenever the AnkiConnect URL or Android mode changes.
+  let ankiTransportKey = $derived(
+    [
+      $settings.ankiConnectSettings.url,
+      $settings.ankiConnectSettings.androidModeOverride,
+      $settings.ankiConnectSettings.connectionData?.isAndroid ?? false
+    ].join('|')
+  );
+  let controller = $derived.by(() => {
+    void ankiTransportKey;
+    if (!ankiEnabled || !client) return null;
+    return createDisplayController(client, { anki: createMokuroAnkiTransport() });
+  });
+  let noteContext = $derived.by(() => {
+    const view = currentView?.kind === 'term' ? currentView : null;
+    if (!view) return {};
+    return {
+      sentence: view.sentence,
+      url: window.location.href,
+      documentTitle: document.title,
+      query: view.popupSourceText,
+      fullQuery: view.popupSourceText
+    };
+  });
+  let extraMarkers = $derived({
+    series: volumeMetadata?.seriesTitle ?? '',
+    volume: volumeMetadata?.volumeTitle ?? ''
+  });
+
   const transitionParams = {
     y: 320,
     duration: 200,
     easing: sineIn
   };
 
-  function debugYomitan(message: string, details?: Record<string, unknown>) {
-    logYomitanDebug('drawer', message, details);
+  onMount(() => {
+    // Client-side only: SvelteKit SSR must not touch `customElements`.
+    defineYomitanEntries();
+  });
+
+  // The results element is a custom element: hand it data as properties and listen for its events.
+  $effect(() => {
+    const element = entriesElement;
+    const activeClient = client;
+    const view = currentView;
+    if (!element || !activeClient || !view || view.entries.length === 0) return;
+
+    const onKanjiClick = (event: Event) => {
+      void handleKanjiClick((event as CustomEvent<{ character: string }>).detail.character);
+    };
+    const onLinkClick = (event: Event) => {
+      void handleLinkClick((event as CustomEvent<{ query: string }>).detail.query);
+    };
+    const onNoteAdded = () => {
+      void syncAnkiWeb();
+      showSnackbar('Added note to Anki.');
+    };
+    const onNoteError = (event: Event) => {
+      const error = (event as CustomEvent<{ error: unknown }>).detail.error;
+      console.error('Failed to add Yomitan note to Anki:', error);
+      const message = error instanceof Error ? error.message : String(error);
+      showSnackbar(`Failed to add note: ${message}`);
+    };
+    element.addEventListener('kanji-click', onKanjiClick);
+    element.addEventListener('link-click', onLinkClick);
+    element.addEventListener('note-added', onNoteAdded);
+    element.addEventListener('note-error', onNoteError);
+
+    element.client = activeClient;
+    element.controller = controller;
+    element.extraMarkers = extraMarkers;
+    element.noteContext = noteContext;
+    // Last: assigning entries triggers the render.
+    element.entries = view.entries;
+
+    return () => {
+      element.removeEventListener('kanji-click', onKanjiClick);
+      element.removeEventListener('link-click', onLinkClick);
+      element.removeEventListener('note-added', onNoteAdded);
+      element.removeEventListener('note-error', onNoteError);
+    };
+  });
+
+  function isSelectable(token: ParseToken): boolean {
+    return (token.headwords?.length ?? 0) > 0;
   }
 
   function getRootSourceText(): string {
@@ -154,7 +218,6 @@
   }
 
   function resetDrawerState() {
-    dictionaries = [];
     tokens = [];
     selectedTokenIndex = null;
     errorMessage = '';
@@ -164,9 +227,10 @@
     lookupLoading = false;
     currentSelection = null;
     viewStack = [];
-    navigationRequestId = 0;
+    // Both counters stay monotonic so results from before a reset are always stale.
+    navigationRequestId += 1;
+    loadGeneration += 1;
     viewIdCounter = 0;
-    ankiPrecheckWarningShown = false;
     clearNativeSelection();
   }
 
@@ -175,7 +239,6 @@
     lookupLoading = true;
     noticeMessage = '';
     selectionMessage = '';
-    ankiPrecheckWarningShown = false;
     clearNativeSelection();
     return navigationRequestId;
   }
@@ -215,34 +278,18 @@
     clearNativeSelection();
   }
 
-  function updateTermView(
-    viewId: number,
-    updater: (view: DrawerTermView) => DrawerTermView
-  ): boolean {
-    let updated = false;
-
-    viewStack = viewStack.map((view) => {
-      if (view.kind !== 'term' || view.id !== viewId) {
-        return view;
-      }
-
-      updated = true;
-      return updater(view);
-    });
-
-    return updated;
-  }
-
-  function hasTermView(viewId: number): boolean {
-    return viewStack.some((view) => view.kind === 'term' && view.id === viewId);
-  }
-
+  /** The origin of a selection node, looking through the results element's shadow root. */
   function resolveSelectionOrigin(node: Node | null): DrawerSelectionOrigin | null {
-    if (!node) return null;
-    const element = node instanceof Element ? node : node.parentElement;
-    if (!element) return null;
-    if (tokenSelectionRoot?.contains(element)) return 'tokens';
-    if (resultsSelectionRoot?.contains(element)) return 'results';
+    let current: Node | null = node;
+    while (current) {
+      const element: Element | null = current instanceof Element ? current : current.parentElement;
+      if (element) {
+        if (tokenSelectionRoot?.contains(element)) return 'tokens';
+        if (resultsSelectionRoot?.contains(element)) return 'results';
+      }
+      const root = current.getRootNode();
+      current = root instanceof ShadowRoot ? root.host : null;
+    }
     return null;
   }
 
@@ -283,6 +330,7 @@
     popupSourceText: string;
     rootSourceText: string;
     tokenIndex: number | null;
+    sentence: Sentence;
     previousView: DrawerSearchView | null;
   }): DrawerTermView {
     return {
@@ -293,13 +341,11 @@
       popupSourceText: params.popupSourceText,
       rootSourceText: params.rootSourceText,
       tokenIndex: params.tokenIndex,
+      sentence: params.sentence,
       ui: {
         title: params.query,
         backLabel: getBackLabel(params.previousView)
-      },
-      ankiButtonStates: ankiEnabled ? params.entries.map(() => ({ state: 'ready' })) : [],
-      ankiButtonChecked: ankiEnabled ? params.entries.map(() => false) : [],
-      ankiButtonFadeIn: ankiEnabled ? params.entries.map(() => false) : []
+      }
     };
   }
 
@@ -324,192 +370,33 @@
     };
   }
 
-  async function copyDebugSnapshot() {
-    try {
-      const activeTermView = getActiveTermView();
-      const snapshot = buildYomitanDebugSnapshot({
-        drawer: {
-          open,
-          loading,
-          lookupLoading,
-          tokenCount: tokens.length,
-          selectableCount: tokens.filter((token) => token.selectable).length,
-          selectedTokenIndex,
-          currentViewKind: currentView?.kind ?? null,
-          stackDepth: viewStack.length,
-          currentQuery: currentView?.query ?? '',
-          activeTermQuery: activeTermView?.query ?? '',
-          termEntryCount: activeTermView?.entries.length ?? 0,
-          kanjiEntryCount: currentView?.kind === 'kanji' ? currentView.entries.length : 0,
-          noEntries,
-          noticeMessage,
-          errorMessage,
-          sourceTextLength: sourceText.length,
-          sourceTextPreview: sourceText.slice(0, 120),
-          sourceTextCodePoints: getCodePointPreview(sourceText),
-          selectionText: currentSelection?.text ?? '',
-          selectionOrigin: currentSelection?.origin ?? null,
-          dictionaryCount: dictionaries.length,
-          dictionaryTitles: dictionaries.map((item) => item.title)
-        }
-      });
-
-      await copyTextToClipboard(snapshot);
-      showSnackbar('Copied Yomitan debug snapshot.');
-    } catch (error) {
-      console.error('Failed to copy Yomitan debug snapshot:', error);
-      showSnackbar('Failed to copy Yomitan debug snapshot.');
-    }
-  }
-
-  async function handleAddToAnki(entryIndex: number) {
-    if (!ankiEnabled) {
-      showSnackbar('Enable Anki integration in settings first.');
-      return;
-    }
-
-    if (currentView?.kind !== 'term') return;
-
-    const entry = currentView.entries[entryIndex];
-    if (!entry) return;
-
-    await updateAnkiButtonState(currentView.id, entryIndex, { state: 'adding' });
-    try {
-      const source = currentView.popupSourceText || currentView.rootSourceText;
-      const result = await addPopupAnkiNote(entry, source, volumeMetadata);
-      if (result.noteId) {
-        await updateAnkiButtonState(currentView.id, entryIndex, { state: 'added' });
-        showSnackbar('Added note to Anki.');
-      } else {
-        await updateAnkiButtonState(currentView.id, entryIndex, { state: 'error' });
-        showSnackbar('Failed to add note to Anki.');
-      }
-    } catch (error) {
-      console.error('Failed to add Yomitan note to Anki:', error);
-      await updateAnkiButtonState(currentView.id, entryIndex, { state: 'error' });
-      const message = error instanceof Error ? error.message : String(error);
-      showSnackbar(`Failed to add note: ${message}`);
-    }
-  }
-
-  function showAnkiButtonsAfterPrecheck(viewId: number, states: YomitanAnkiButtonUiState[]) {
-    updateTermView(viewId, (view) => ({
-      ...view,
-      ankiButtonStates: states,
-      ankiButtonChecked: states.map(() => true),
-      ankiButtonFadeIn: states.map(() => true)
-    }));
-
-    requestAnimationFrame(() => {
-      updateTermView(viewId, (view) => ({
-        ...view,
-        ankiButtonFadeIn: states.map(() => false)
-      }));
-    });
-  }
-
-  async function precheckAnkiButtonStates(
-    viewId: number,
-    entries: TermDictionaryEntry[],
-    tokenText: string,
-    fallbackSourceText: string
-  ) {
-    try {
-      const source = tokenText || fallbackSourceText;
-      const result = await getPopupAnkiButtonStates(entries, source, volumeMetadata);
-      if (!hasTermView(viewId)) return;
-
-      showAnkiButtonsAfterPrecheck(viewId, result.buttonStates);
-
-      if (result.hadConnectionError && !ankiPrecheckWarningShown) {
-        ankiPrecheckWarningShown = true;
-        showSnackbar('Could not verify duplicates in Anki. You can still add cards.');
-      }
-    } catch (error) {
-      if (!hasTermView(viewId)) return;
-      console.error('Failed to precheck Yomitan entries in Anki:', error);
-      showAnkiButtonsAfterPrecheck(
-        viewId,
-        entries.map(() => ({
-          state: 'ready',
-          title: 'Could not verify duplicates; add may create a duplicate.'
-        }))
-      );
-      if (!ankiPrecheckWarningShown) {
-        ankiPrecheckWarningShown = true;
-        showSnackbar('Could not verify duplicates in Anki. You can still add cards.');
-      }
-    }
-  }
-
-  async function updateAnkiButtonState(
-    viewId: number,
-    entryIndex: number,
-    nextState: YomitanAnkiButtonUiState
-  ) {
-    updateTermView(viewId, (view) => {
-      if (entryIndex < 0 || entryIndex >= view.ankiButtonStates.length) {
-        return view;
-      }
-
-      return {
-        ...view,
-        ankiButtonStates: view.ankiButtonStates.map((state, index) =>
-          index === entryIndex ? nextState : state
-        ),
-        ankiButtonChecked: view.ankiButtonChecked.map((checked, index) =>
-          index === entryIndex ? true : checked
-        ),
-        ankiButtonFadeIn: view.ankiButtonFadeIn.map((fadeIn, index) =>
-          index === entryIndex ? false : fadeIn
-        )
-      };
-    });
-  }
-
   async function runTermLookup(params: {
     query: string;
     tokenIndex: number | null;
     popupSourceText: string;
     rootSourceText: string;
+    /** The lookup's range in the root text; defaults to the whole query. */
+    sentence: Sentence;
     mode: 'replace-active-term' | 'push';
     pushOnEmpty?: boolean;
   }): Promise<{ foundEntries: boolean; viewId: number | null }> {
+    if (!client) return { foundEntries: false, viewId: null };
     const requestId = beginNavigation();
 
     try {
-      const normalizedPreferences = normalizeDictionaryPreferences(
-        dictionaries.map((item) => item.title),
-        loadDictionaryPreferences()
-      );
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
-      debugYomitan('lookup:start', {
-        tokenText: params.query,
-        tokenIndex: params.tokenIndex,
-        enabledDictionaryCount: enabledMap.size,
-        mode: params.mode
-      });
-
-      const lookup = await lookupTerm(params.query, enabledMap);
+      const lookup = await client.lookup.terms(params.query);
       if (!isActiveNavigation(requestId)) {
         return { foundEntries: false, viewId: null };
       }
 
-      const previousView = currentView;
       const nextView = buildTermView({
         query: params.query,
         entries: lookup.entries,
         popupSourceText: params.popupSourceText,
         rootSourceText: params.rootSourceText,
         tokenIndex: params.tokenIndex,
-        previousView
-      });
-
-      debugYomitan('lookup:complete', {
-        tokenText: params.query,
-        entryCount: lookup.entries.length,
-        originalTextLength: lookup.originalTextLength,
-        mode: params.mode
+        sentence: params.sentence,
+        previousView: currentView
       });
 
       if (!lookup.entries.length && params.pushOnEmpty === false) {
@@ -522,21 +409,9 @@
         replaceActiveTermView(nextView);
       }
 
-      if (ankiEnabled && lookup.entries.length > 0) {
-        void precheckAnkiButtonStates(
-          nextView.id,
-          lookup.entries,
-          params.popupSourceText,
-          params.rootSourceText
-        );
-      }
       return { foundEntries: lookup.entries.length > 0, viewId: nextView.id };
     } catch (error) {
       console.error('Yomitan lookup failed:', error);
-      debugYomitan('lookup:failed', {
-        tokenText: params.query,
-        error: error instanceof Error ? error.message : String(error)
-      });
       showSnackbar('Failed to look up token in Yomitan.');
       return { foundEntries: false, viewId: null };
     } finally {
@@ -552,36 +427,17 @@
     rootSourceText: string;
     mode: 'push' | 'replace-top';
   }): Promise<boolean> {
+    if (!client) return false;
     const requestId = beginNavigation();
 
     try {
-      const normalizedPreferences = normalizeDictionaryPreferences(
-        dictionaries.map((item) => item.title),
-        loadDictionaryPreferences()
-      );
-      const enabledMap = buildEnabledKanjiDictionaryMap(normalizedPreferences, dictionaries);
-      debugYomitan('lookup:kanji-start', {
-        character: params.query,
-        enabledDictionaryCount: enabledMap.size,
-        mode: params.mode
-      });
-
-      if (enabledMap.size === 0) {
-        noticeMessage = 'No enabled kanji dictionaries.';
-        return false;
-      }
-
-      const entries = await lookupKanji(params.query, enabledMap);
+      const entries = await client.lookup.kanji(params.query);
       if (!isActiveNavigation(requestId)) {
         return false;
       }
 
-      debugYomitan('lookup:kanji-complete', {
-        character: params.query,
-        entryCount: entries.length
-      });
-
       if (entries.length === 0) {
+        noticeMessage = `No kanji dictionary entries found for "${params.query}".`;
         return false;
       }
 
@@ -601,10 +457,6 @@
       return true;
     } catch (error) {
       console.error('Yomitan kanji lookup failed:', error);
-      debugYomitan('lookup:kanji-failed', {
-        character: params.query,
-        error: error instanceof Error ? error.message : String(error)
-      });
       showSnackbar('Failed to look up kanji in Yomitan.');
       return false;
     } finally {
@@ -616,67 +468,43 @@
 
   async function loadAndTokenizeText() {
     const text = getRootSourceText();
-    debugYomitan('load:start', {
-      sourceTextLength: sourceText.length,
-      sourceTextPreview: sourceText.slice(0, 120),
-      sourceTextCodePoints: getCodePointPreview(sourceText),
-      trimmedLength: text.length,
-      trimmedPreview: text.slice(0, 120),
-      trimmedCodePoints: getCodePointPreview(text)
-    });
 
     if (!text) {
       errorMessage = 'No text found for this box.';
-      debugYomitan('load:empty-text', { sourceText });
       return;
     }
 
+    const generation = ++loadGeneration;
+    const isStale = () => generation !== loadGeneration;
     loading = true;
     errorMessage = '';
 
     try {
-      dictionaries = await getInstalledDictionaries();
-      debugYomitan('load:dictionaries', {
-        dictionaryCount: dictionaries.length,
-        dictionaryTitles: dictionaries.map((item) => item.title)
-      });
-      if (dictionaries.length === 0) {
+      const yomitan = await getYomitan();
+      if (isStale()) return;
+      client = yomitan;
+
+      const installed = await yomitan.dictionaries.list();
+      if (isStale()) return;
+      if (installed.length === 0) {
         errorMessage = 'No Yomitan dictionaries installed. Add dictionaries in Settings > Yomitan.';
         return;
       }
 
-      const normalizedPreferences = normalizeDictionaryPreferences(
-        dictionaries.map((item) => item.title),
-        loadDictionaryPreferences()
-      );
-      saveDictionaryPreferences(normalizedPreferences);
-
-      const enabledMap = buildEnabledDictionaryMap(normalizedPreferences);
-      debugYomitan('load:dictionary-preferences', {
-        normalizedPreferences,
-        enabledDictionaryCount: enabledMap.size
-      });
-      if (enabledMap.size === 0) {
+      if (!yomitan.profile.get().options.dictionaries.some((dictionary) => dictionary.enabled)) {
         errorMessage = 'All dictionaries are disabled. Enable at least one in Settings > Yomitan.';
         return;
       }
 
-      tokens = await tokenizeText(text, enabledMap);
-      debugYomitan('load:tokenize-complete', {
-        tokenCount: tokens.length,
-        selectableCount: tokens.filter((token) => token.selectable).length,
-        tokenPreview: tokens.slice(0, 10).map((token) => ({
-          text: token.text,
-          selectable: token.selectable,
-          reading: token.reading
-        }))
-      });
+      const parsed = await yomitan.lookup.parse(text);
+      if (isStale()) return;
+      tokens = parsed;
       if (tokens.length === 0) {
         errorMessage = 'No tokens found for this text.';
         return;
       }
 
-      const firstSelectableTokenIndex = tokens.findIndex((token) => token.selectable);
+      const firstSelectableTokenIndex = tokens.findIndex(isSelectable);
       if (firstSelectableTokenIndex >= 0) {
         const firstToken = tokens[firstSelectableTokenIndex];
         if (firstToken) {
@@ -686,18 +514,16 @@
         selectionMessage = 'No selectable words found for this text.';
       }
     } catch (error) {
+      if (isStale()) return;
       console.error('Yomitan tokenization failed:', error);
-      debugYomitan('load:tokenization-failed', {
-        error: error instanceof Error ? error.message : String(error)
-      });
       errorMessage = 'Failed to initialize Yomitan.';
     } finally {
-      loading = false;
+      if (!isStale()) loading = false;
     }
   }
 
-  async function handleTokenClick(token: YomitanToken, index: number) {
-    if (!token.selectable) return;
+  async function handleTokenClick(token: ParseToken, index: number) {
+    if (!isSelectable(token) || !client) return;
 
     const activeTermView = getActiveTermView();
     if (
@@ -723,11 +549,17 @@
     }
 
     selectedTokenIndex = index;
+    const rootSourceText = getRootSourceText();
     await runTermLookup({
       query: token.text,
       tokenIndex: index,
       popupSourceText: token.text,
-      rootSourceText: getRootSourceText(),
+      rootSourceText,
+      sentence: client.lookup.sentence(
+        rootSourceText,
+        token.range.start,
+        token.range.end - token.range.start
+      ),
       mode: 'replace-active-term'
     });
   }
@@ -748,16 +580,69 @@
     }
   }
 
+  /**
+   * The sentence for a query that isn't a token: taken from the text box when the query occurs in
+   * it (at `hint` if the selection position is known, else the first occurrence), otherwise from
+   * the query alone.
+   */
+  function sentenceForQuery(query: string, rootText: string, hint?: number): Sentence {
+    if (!client) return { text: query, offset: 0 };
+    let index = hint !== undefined && rootText.startsWith(query, hint) ? hint : -1;
+    if (index < 0) index = rootText.indexOf(query);
+    return index >= 0
+      ? client.lookup.sentence(rootText, index, query.length)
+      : client.lookup.sentence(query, 0, query.length);
+  }
+
+  /** The text-box offset of the token holding the start of the native selection, if any. */
+  function selectionTokenStart(): number | undefined {
+    const selection = window.getSelection();
+    const node = selection?.anchorNode;
+    const element = node instanceof Element ? node : node?.parentElement;
+    const index = Number(element?.closest<HTMLElement>('[data-token-index]')?.dataset.tokenIndex);
+    if (!Number.isInteger(index) || !tokens[index]) return undefined;
+    // Within one token the offset narrows the position; across tokens the token start is used.
+    const within =
+      selection && selection.anchorNode === selection.focusNode
+        ? Math.min(selection.anchorOffset, selection.focusOffset)
+        : 0;
+    return tokens[index].range.start + within;
+  }
+
+  async function handleLinkClick(query: string) {
+    const text = query.trim();
+    if (!text) return;
+
+    const rootSourceText = currentView?.rootSourceText || getRootSourceText();
+    await runTermLookup({
+      query: text,
+      tokenIndex: null,
+      popupSourceText: text,
+      rootSourceText,
+      sentence: sentenceForQuery(text, rootSourceText),
+      mode: 'push',
+      pushOnEmpty: true
+    });
+  }
+
   async function handleSearchSelection() {
     if (!currentSelection) return;
 
     const selection = currentSelection.text;
     const previousView = currentView;
+    const rootSourceText = previousView?.rootSourceText || getRootSourceText();
+    // A token-bar selection maps onto the text box; use its position when we can.
+    let hint: number | undefined;
+    if (currentSelection.origin === 'tokens') {
+      const start = selectionTokenStart();
+      if (start !== undefined) hint = start;
+    }
     const termResult = await runTermLookup({
       query: selection,
       tokenIndex: null,
       popupSourceText: selection,
-      rootSourceText: previousView?.rootSourceText || getRootSourceText(),
+      rootSourceText,
+      sentence: sentenceForQuery(selection, rootSourceText, hint),
       mode: 'push',
       pushOnEmpty: true
     });
@@ -783,7 +668,6 @@
       return;
     }
 
-    debugEnabled = isYomitanDebugEnabled();
     loadAndTokenizeText();
   });
 
@@ -806,6 +690,10 @@
       onClose?.();
     }
     wasOpen = open;
+  });
+
+  onDestroy(() => {
+    entriesElement = null;
   });
 </script>
 
@@ -884,16 +772,6 @@
           </button>
         </div>
       </div>
-      {#if debugEnabled}
-        <div class="mb-4 flex justify-end">
-          <Button
-            outline
-            color="light"
-            class="pointer-events-auto !bg-gray-900/80 !text-gray-100 backdrop-blur-sm"
-            onclick={copyDebugSnapshot}>Copy debug snapshot</Button
-          >
-        </div>
-      {/if}
       {#if !loading}
         <section class="fade-in">
           {#if errorMessage}
@@ -904,17 +782,19 @@
               class="flex flex-wrap items-end text-gray-100 select-text"
             >
               {#each tokens as token, index (`token-${index}-${token.text}`)}
-                {#if token.selectable}
+                {#if isSelectable(token)}
                   <button
                     type="button"
+                    data-token-index={index}
                     class={`inline appearance-none rounded-sm border-0 bg-transparent px-0.5 py-0 text-[1.05rem] leading-8 text-gray-100 underline underline-offset-3 transition-colors select-text hover:text-white hover:decoration-gray-300 focus-visible:outline focus-visible:outline-1 focus-visible:outline-primary-500 ${selectedTokenIndex === index ? 'bg-gray-700/70 decoration-primary-400' : 'decoration-gray-500/70'}`}
                     onclick={() => handleTokenClick(token, index)}
                   >
                     {token.text}
                   </button>
                 {:else}
-                  <span class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200"
-                    >{token.text}</span
+                  <span
+                    data-token-index={index}
+                    class="px-0.5 py-0 text-[1.05rem] leading-8 text-gray-200">{token.text}</span
                   >
                 {/if}
               {/each}
@@ -943,38 +823,16 @@
           >
             {emptyResultMessage}
           </div>
-        {:else if currentView?.kind === 'kanji' && currentView.entries.length > 0}
-          <div
-            bind:this={resultsSelectionRoot}
-            class="fade-in h-full overflow-x-hidden overflow-y-auto"
-          >
-            <YomitanKanjiResults
-              entries={currentView.entries}
-              dictionaryInfo={dictionaries}
-              theme="dark"
-            />
-          </div>
-        {:else if currentView?.kind === 'term' && currentView.entries.length > 0}
-          <div
-            bind:this={resultsSelectionRoot}
-            class="fade-in h-full overflow-x-hidden overflow-y-auto"
-          >
-            <YomitanResults
-              entries={currentView.entries}
-              dictionaryInfo={dictionaries}
-              theme="dark"
-              {ankiEnabled}
-              ankiButtonStates={currentView.ankiButtonStates}
-              ankiButtonChecked={currentView.ankiButtonChecked}
-              ankiButtonFadeIn={currentView.ankiButtonFadeIn}
-              onAddToAnki={(entryIndex) => {
-                void handleAddToAnki(entryIndex);
-              }}
-              onKanjiClick={(character) => {
-                void handleKanjiClick(character);
-              }}
-            />
-          </div>
+        {:else if currentView && currentView.entries.length > 0}
+          {#key currentView.id}
+            <div
+              bind:this={resultsSelectionRoot}
+              data-testid="yomitan-results"
+              class="fade-in h-full overflow-x-hidden overflow-y-auto"
+            >
+              <yomitan-entries bind:this={entriesElement}></yomitan-entries>
+            </div>
+          {/key}
         {/if}
 
         {#if lookupLoading}

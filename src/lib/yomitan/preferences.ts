@@ -1,3 +1,8 @@
+/**
+ * Legacy (pre-2.0) dictionary enabled flags. Dictionaries are re-imported into the new storage, so
+ * these are kept as *pending* preferences and applied to each dictionary's profile entry when a
+ * dictionary with the same title is imported (see `profile-migration.ts`).
+ */
 export interface DictionaryPreference {
   title: string;
   enabled: boolean;
@@ -41,55 +46,8 @@ export function saveDictionaryPreferences(preferences: DictionaryPreference[]): 
 
   const store: DictionaryPreferencesStore = {
     version: 1,
-    dictionaries: preferences.map((item) => ({
-      title: item.title,
-      enabled: item.enabled
-    }))
+    dictionaries: preferences.map((item) => ({ title: item.title, enabled: item.enabled }))
   };
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-}
-
-export function normalizeDictionaryPreferences(
-  installedTitles: string[],
-  existingPreferences: DictionaryPreference[]
-): DictionaryPreference[] {
-  const seen = new Set<string>();
-  const preferenceMap = new Map(existingPreferences.map((item) => [item.title, item]));
-
-  const normalized: DictionaryPreference[] = [];
-
-  for (const title of installedTitles) {
-    if (seen.has(title)) continue;
-    seen.add(title);
-
-    const existing = preferenceMap.get(title);
-    normalized.push({
-      title,
-      enabled: existing?.enabled ?? true
-    });
-  }
-
-  return normalized;
-}
-
-export function moveDictionaryPreference(
-  preferences: DictionaryPreference[],
-  fromIndex: number,
-  toIndex: number
-): DictionaryPreference[] {
-  if (
-    fromIndex < 0 ||
-    toIndex < 0 ||
-    fromIndex >= preferences.length ||
-    toIndex >= preferences.length ||
-    fromIndex === toIndex
-  ) {
-    return preferences;
-  }
-
-  const next = [...preferences];
-  const [item] = next.splice(fromIndex, 1);
-  next.splice(toIndex, 0, item);
-  return next;
 }

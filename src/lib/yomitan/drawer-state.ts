@@ -1,5 +1,4 @@
-import type { KanjiDictionaryEntry, TermDictionaryEntry } from 'yomitan-core';
-import type { YomitanAnkiButtonUiState } from '$lib/yomitan/anki-button-ui';
+import type { KanjiDictionaryEntry, Sentence, TermDictionaryEntry } from 'yomitan-core';
 
 export type DrawerSelectionOrigin = 'results' | 'tokens';
 
@@ -25,9 +24,8 @@ export interface DrawerTermView extends DrawerViewBase {
   kind: 'term';
   entries: TermDictionaryEntry[];
   tokenIndex: number | null;
-  ankiButtonStates: YomitanAnkiButtonUiState[];
-  ankiButtonChecked: boolean[];
-  ankiButtonFadeIn: boolean[];
+  /** The text-box sentence around the looked-up text, for `{sentence}` / cloze Anki fields. */
+  sentence: Sentence;
 }
 
 export interface DrawerKanjiView extends DrawerViewBase {

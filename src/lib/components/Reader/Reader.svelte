@@ -57,8 +57,7 @@
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import YomitanDrawer from './YomitanDrawer.svelte';
-  import { logYomitanDebug } from '$lib/yomitan/debug';
-  import { joinTextBoxLines } from '$lib/yomitan/core';
+  import { joinTextBoxLines } from '$lib/yomitan/text';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -762,15 +761,6 @@
     if (!$settings.yomitanPopupOnTextBoxTap) return;
 
     const sourceText = joinTextBoxLines(data.lines);
-    logYomitanDebug('reader', 'textbox:activate', {
-      blockIndex: data.blockIndex,
-      lineCount: data.lines.length,
-      rawLinePreview: data.lines.slice(0, 3),
-      clickTextLength: data.text.length,
-      clickTextPreview: data.text.slice(0, 120),
-      normalizedTextLength: sourceText.length,
-      normalizedTextPreview: sourceText.slice(0, 120)
-    });
     if (!sourceText) return;
 
     yomitanSourceText = sourceText;

@@ -19,7 +19,8 @@
     getModelNames,
     openConfigureModal
   } from '$lib/anki-connect';
-  import { getPopupFieldMarkers } from '$lib/yomitan/anki-note';
+  import type { ProfileOptions } from 'yomitan-core';
+  import { editProfile, getYomitan } from '$lib/yomitan/client';
   import { onMount } from 'svelte';
 
   let connectionData = $derived($settings.ankiConnectSettings.connectionData);
@@ -34,14 +35,88 @@
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
   let cropImage = $state($settings.ankiConnectSettings.cropImage);
   let ankiTags = $state($settings.ankiConnectSettings.tags);
-  let popupDeckName = $state($settings.ankiConnectSettings.popupDeckName);
-  let popupModelName = $state($settings.ankiConnectSettings.popupModelName);
-  let popupFieldMappings = $state({ ...$settings.ankiConnectSettings.popupFieldMappings });
+  // The popup's deck, note type, fields and duplicate behavior live in the yomitan-core profile
+  // (`anki.cardFormats[0]`, `anki.duplicateBehavior`); these mirror it for the form.
+  let popupDeckName = $state('');
+  let popupModelName = $state('');
+  let popupFieldMappings = $state<Record<string, string>>({});
+  let popupDuplicateBehavior = $state<DuplicateBehavior>('new');
   let popupDecks = $state<string[]>([]);
   let popupModels = $state<string[]>([]);
   let popupModelFields = $state<string[]>([]);
   let popupFieldMarkers = $state<string[]>([]);
   let loadingPopupConfig = $state(false);
+  let popupProfileReady: Promise<void> = Promise.resolve();
+
+  type DuplicateBehavior = 'new' | 'overwrite' | 'prevent';
+  const duplicateBehaviorOptions: Array<{ value: DuplicateBehavior; name: string }> = [
+    { value: 'new', name: 'Add a new note (allow duplicates)' },
+    { value: 'overwrite', name: 'Overwrite the existing note' },
+    { value: 'prevent', name: 'Prevent duplicates' }
+  ];
+
+  function ensureCardFormat(options: ProfileOptions) {
+    if (!options.anki.cardFormats[0]) {
+      options.anki.cardFormats[0] = {
+        type: 'term',
+        name: 'Popup',
+        deck: 'Default',
+        model: '',
+        fields: {},
+        icon: 'big-circle'
+      } as ProfileOptions['anki']['cardFormats'][number];
+    }
+    return options.anki.cardFormats[0];
+  }
+
+  async function loadPopupProfileState() {
+    const client = await getYomitan();
+    const { anki } = client.profile.get().options;
+    const format = anki.cardFormats[0];
+    popupDeckName = format?.deck ?? '';
+    popupModelName = format?.model ?? '';
+    popupFieldMappings = Object.fromEntries(
+      Object.entries(format?.fields ?? {}).map(([field, { value }]) => [field, value])
+    );
+    popupDuplicateBehavior = anki.duplicateBehavior as DuplicateBehavior;
+  }
+
+  async function savePopupDeck() {
+    const deck = popupDeckName;
+    await editProfile((options) => {
+      ensureCardFormat(options).deck = deck;
+    });
+  }
+
+  async function savePopupFields(model: string, fields: Record<string, string>) {
+    await editProfile((options) => {
+      const format = ensureCardFormat(options);
+      const previous = format.fields ?? {};
+      format.model = model;
+      format.name = model || format.name;
+      format.fields = Object.fromEntries(
+        Object.entries(fields).map(([field, value]) => [
+          field,
+          { overwriteMode: previous[field]?.overwriteMode ?? 'coalesce', value }
+        ])
+      ) as typeof format.fields;
+    });
+  }
+
+  async function savePopupDuplicateBehavior() {
+    const behavior = popupDuplicateBehavior;
+    await editProfile((options) => {
+      options.anki.duplicateBehavior = behavior;
+    });
+  }
+
+  async function saveTags(tags: string) {
+    updateAnkiSetting('tags', tags);
+    // The popup reads its tags from the profile; keep both in sync.
+    await editProfile((options) => {
+      options.anki.tags = tags.split(/\s+/).filter((tag) => tag.length > 0);
+    });
+  }
 
   let doubleTapEnabled = $state(
     $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
@@ -77,6 +152,9 @@
 
       updateAnkiSetting('connectionData', data);
       updateAnkiSetting('enabled', true);
+      await editProfile((options) => {
+        options.anki.enable = true;
+      });
 
       if (!selectedModel && data.models.length > 0) {
         selectedModel = data.models[0];
@@ -92,6 +170,9 @@
   function handleDisconnect() {
     updateAnkiSetting('connectionData', null);
     updateAnkiSetting('enabled', false);
+    void editProfile((options) => {
+      options.anki.enable = false;
+    });
     popupDecks = [];
     popupModels = [];
     popupModelFields = [];
@@ -108,24 +189,26 @@
   async function loadPopupConfig() {
     loadingPopupConfig = true;
     try {
+      await popupProfileReady;
       const [decks, models, markers] = await Promise.all([
         getDeckNames(),
         getModelNames(),
-        getPopupFieldMarkers().catch(() => [])
+        getYomitan()
+          .then((client) => client.anki.markers('term'))
+          .catch(() => [] as string[])
       ]);
 
       popupDecks = decks;
       popupModels = models;
-      popupFieldMarkers = markers;
+      popupFieldMarkers = [...markers].sort((a, b) => a.localeCompare(b));
 
       if (!popupDeckName && decks.length > 0) {
         popupDeckName = decks[0];
-        updateAnkiSetting('popupDeckName', popupDeckName);
+        await savePopupDeck();
       }
 
       if (!popupModelName && models.length > 0) {
         popupModelName = models[0];
-        updateAnkiSetting('popupModelName', popupModelName);
       }
 
       if (popupModelName) {
@@ -136,20 +219,35 @@
     }
   }
 
+  let modelFieldsRequest = 0;
+
   async function loadPopupModelFields(modelName: string) {
-    popupModelFields = await getModelFieldNames(modelName);
-    const merged = { ...popupFieldMappings };
-    for (const field of popupModelFields) {
-      if (typeof merged[field] !== 'string') {
-        merged[field] = '';
-      }
+    const request = ++modelFieldsRequest;
+    const fields = await getModelFieldNames(modelName);
+    // A newer model selection wins over this (slower) request.
+    if (request !== modelFieldsRequest) return;
+    if (fields.length === 0) {
+      // A failed request returns []: keep the mapping of the same model, but still save a newly
+      // selected model (its old fields belong to the previous note type).
+      await editProfile((options) => {
+        const format = ensureCardFormat(options);
+        if (format.model !== modelName) {
+          format.model = modelName;
+          format.name = modelName || format.name;
+          format.fields = {} as typeof format.fields;
+        }
+      });
+      return;
     }
-    popupFieldMappings = merged;
-    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+    popupModelFields = fields;
+    // Only the model's own fields, keeping the values already mapped for them.
+    popupFieldMappings = Object.fromEntries(
+      popupModelFields.map((field) => [field, popupFieldMappings[field] ?? ''])
+    );
+    await savePopupFields(modelName, popupFieldMappings);
   }
 
   async function onPopupModelChange() {
-    updateAnkiSetting('popupModelName', popupModelName);
     if (!popupModelName) return;
     await loadPopupModelFields(popupModelName);
   }
@@ -159,7 +257,7 @@
       ...popupFieldMappings,
       [field]: value
     };
-    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+    void savePopupFields(popupModelName, popupFieldMappings);
   }
 
   function applyRecommendedPopupMappings() {
@@ -201,15 +299,18 @@
     }
 
     popupFieldMappings = next;
-    updateAnkiSetting('popupFieldMappings', popupFieldMappings);
+    void savePopupFields(popupModelName, popupFieldMappings);
   }
 
   function insertTag(tag: string) {
     ankiTags = ankiTags ? `${ankiTags} ${tag}`.trim() : tag;
-    updateAnkiSetting('tags', ankiTags);
+    void saveTags(ankiTags);
   }
 
   onMount(() => {
+    popupProfileReady = loadPopupProfileState().catch((error) => {
+      console.error('Failed to load the Yomitan popup settings:', error);
+    });
     if (url && !connectionData && $settings.ankiConnectSettings.enabled) {
       void handleConnect();
     } else if ($settings.ankiConnectSettings.enabled) {
@@ -311,7 +412,7 @@
               {disabled}
               items={popupDeckOptions}
               bind:value={popupDeckName}
-              onchange={() => updateAnkiSetting('popupDeckName', popupDeckName)}
+              onchange={() => void savePopupDeck()}
             />
           </Label>
         </div>
@@ -324,6 +425,18 @@
               items={popupModelOptions}
               bind:value={popupModelName}
               onchange={onPopupModelChange}
+            />
+          </Label>
+        </div>
+
+        <div class="mb-3">
+          <Label class="text-gray-900 dark:text-white">
+            When the note already exists:
+            <Select
+              {disabled}
+              items={duplicateBehaviorOptions}
+              bind:value={popupDuplicateBehavior}
+              onchange={() => void savePopupDuplicateBehavior()}
             />
           </Label>
         </div>
@@ -491,7 +604,7 @@
           {disabled}
           type="text"
           bind:value={ankiTags}
-          onchange={() => updateAnkiSetting('tags', ankiTags)}
+          onchange={() => void saveTags(ankiTags)}
         />
         <div class="mt-2 flex flex-wrap gap-2">
           {#each DYNAMIC_TAGS as { tag, description }}
