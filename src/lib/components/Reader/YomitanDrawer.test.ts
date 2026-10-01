@@ -405,6 +405,43 @@ describe('YomitanDrawer', () => {
       });
     });
 
+    it('searches a shadow-root selection even when Chromium reports a collapsed body selection', async () => {
+      clientMock.lookup.parse.mockResolvedValue([word('学校')]);
+      const view = render(YomitanDrawer, { open: true, sourceText: '学校' });
+      await waitFor(() => expect(resultsText(view.container)).toBeTruthy());
+      const element = resultsElement(view.container);
+      const root = element.attachShadow({ mode: 'open' });
+      const text = document.createTextNode('学生');
+      root.append(text);
+      const range = new StaticRange({
+        startContainer: text,
+        startOffset: 0,
+        endContainer: text,
+        endOffset: 2
+      });
+      const getComposedRanges = vi.fn(() => [range]);
+      const selection = window.getSelection()!;
+      const spy = vi.spyOn(window, 'getSelection').mockReturnValue({
+        rangeCount: 1,
+        isCollapsed: true,
+        anchorNode: document.body,
+        focusNode: document.body,
+        getComposedRanges,
+        toString: () => '学生',
+        removeAllRanges: () => selection.removeAllRanges()
+      } as unknown as Selection);
+      try {
+        document.dispatchEvent(new Event('selectionchange'));
+        await fireEvent.click(
+          await waitFor(() => view.getByRole('button', { name: 'Search selection' }))
+        );
+        expect(getComposedRanges).toHaveBeenCalledWith({ shadowRoots: [root] });
+        await waitFor(() => expect(clientMock.lookup.terms).toHaveBeenLastCalledWith('学生'));
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('does not show for non-Japanese result selections', async () => {
       clientMock.lookup.parse.mockResolvedValue([word('学校')]);
       clientMock.lookup.terms.mockResolvedValue({
