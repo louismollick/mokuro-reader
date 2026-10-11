@@ -137,9 +137,13 @@
   let modelOptions = $derived(availableModels.map((model) => ({ value: model, name: model })));
   let popupDeckOptions = $derived(popupDecks.map((deck) => ({ value: deck, name: deck })));
   let popupModelOptions = $derived(popupModels.map((model) => ({ value: model, name: model })));
+  // Kiku is a Lapis fork with the same field names, so both share one recommended mapping.
+  let hasRecommendedPopupMapping = $derived(
+    ['lapis', 'kiku'].includes(popupModelName.trim().toLowerCase())
+  );
   let popupMappingButtonLabel = $derived(
-    popupModelName.trim().toLowerCase() === 'lapis'
-      ? 'Use recommended Lapis mapping'
+    hasRecommendedPopupMapping
+      ? `Use recommended ${popupModelName.trim()} mapping`
       : 'Use default mapping'
   );
   let disabled = $derived(!isConnected);
@@ -266,7 +270,7 @@
       popupModelFields.find((field) => field.toLowerCase() === name.toLowerCase()) ||
       popupModelFields.find((field) => field.toLowerCase().includes(name.toLowerCase()));
 
-    if (popupModelName.trim().toLowerCase() === 'lapis') {
+    if (hasRecommendedPopupMapping) {
       const lapisMappings: Array<[string, string]> = [
         ['Expression', '{expression}'],
         ['ExpressionFurigana', '{furigana-plain}'],
