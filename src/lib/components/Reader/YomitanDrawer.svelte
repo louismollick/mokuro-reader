@@ -75,10 +75,11 @@
     return 'No dictionary entries found for this token.';
   });
 
-  // Rebuilt whenever the AnkiConnect URL or Android mode changes.
+  // Rebuilt whenever the AnkiConnect connection settings or Android mode change.
   let ankiTransportKey = $derived(
     [
       $settings.ankiConnectSettings.url,
+      $settings.ankiConnectSettings.apiKey,
       $settings.ankiConnectSettings.androidModeOverride,
       $settings.ankiConnectSettings.connectionData?.isAndroid ?? false
     ].join('|')

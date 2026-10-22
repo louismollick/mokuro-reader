@@ -63,6 +63,7 @@ export type AnkiConnectionData = {
 export type AnkiConnectSettings = {
   // Connection
   url: string;
+  apiKey?: string;
   enabled: boolean; // User can explicitly disable even when connected
   connectionData: AnkiConnectionData | null; // Cached from last successful connection
   androidModeOverride?: 'auto' | 'android' | 'desktop'; // Override auto-detection
@@ -328,6 +329,7 @@ const defaultSettings: Settings = {
   },
   ankiConnectSettings: {
     url: 'http://127.0.0.1:8765',
+    apiKey: '',
     enabled: false,
     connectionData: null,
     androidModeOverride: 'auto',
@@ -448,6 +450,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       ...defaultSettings.ankiConnectSettings,
       // Preserve connection settings
       url: oldAnki.url || defaultSettings.ankiConnectSettings.url,
+      apiKey: typeof oldAnki.apiKey === 'string' ? oldAnki.apiKey : '',
       enabled: oldAnki.enabled ?? defaultSettings.ankiConnectSettings.enabled,
       connectionData: oldAnki.connectionData || null, // Requires reconnect after migration
       androidModeOverride: oldAnki.androidModeOverride || 'auto',

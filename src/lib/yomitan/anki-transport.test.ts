@@ -20,13 +20,14 @@ vi.mock('$lib/anki-connect', () => ({
 vi.mock('$lib/settings', () => ({
   settings: {
     subscribe: (run: (value: unknown) => void) => {
-      run({ ankiConnectSettings: { url: 'http://anki.test:8765' } });
+      run({ ankiConnectSettings: { url: 'http://anki.test:8765', apiKey: 'popup-test-key' } });
       return () => {};
     }
   }
 }));
-vi.mock('yomitan-core', () => ({ createAnkiConnectTransport: () => mocks.base }));
+vi.mock('yomitan-core', () => ({ createAnkiConnectTransport: vi.fn(() => mocks.base) }));
 
+import { createAnkiConnectTransport } from 'yomitan-core';
 import { createMokuroAnkiTransport, createMokuroFetch } from './anki-transport';
 
 const actionOf = (init?: RequestInit) => JSON.parse(String(init?.body)).action as string;
@@ -56,7 +57,11 @@ describe('createMokuroAnkiTransport', () => {
 
     const [deckUrl, deckInit] = mocks.ankiConnect.mock.calls[0];
     expect(deckUrl).toBe('http://anki.test:8765');
+    expect(createAnkiConnectTransport).toHaveBeenCalledWith(
+      expect.objectContaining({ apiKey: 'popup-test-key' })
+    );
     expect(JSON.parse(String(deckInit.body))).toMatchObject({
+      key: 'popup-test-key',
       action: 'createDeck',
       params: { deck: 'Mining::My Series' }
     });

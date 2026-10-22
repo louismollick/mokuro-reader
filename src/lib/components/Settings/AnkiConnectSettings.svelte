@@ -28,6 +28,7 @@
   let isConnecting = $state(false);
 
   let url = $state($settings.ankiConnectSettings.url);
+  let apiKey = $state($settings.ankiConnectSettings.apiKey ?? '');
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
   let selectedModel = $state($settings.ankiConnectSettings.selectedModel);
   let heightField = $state($settings.ankiConnectSettings.heightField);
@@ -387,6 +388,20 @@
       {:else if !isConnecting}
         <Helper class="mt-1">Connect to AnkiConnect to configure card settings</Helper>
       {/if}
+    </div>
+
+    <div>
+      <Label class="text-gray-900 dark:text-white">AnkiConnect API key:</Label>
+      <Input
+        type="password"
+        aria-label="AnkiConnect API key"
+        autocomplete="off"
+        bind:value={apiKey}
+        onchange={() => {
+          updateAnkiSetting('apiKey', apiKey.trim());
+          updateAnkiSetting('connectionData', null);
+        }}
+      />
     </div>
 
     {#if isConnected}

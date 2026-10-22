@@ -14,6 +14,7 @@ import type { AnkiTransport } from 'yomitan-core';
 import { createAnkiConnectTransport } from 'yomitan-core';
 import { isAndroidMode } from '$lib/anki-connect';
 import { settings } from '$lib/settings';
+import { ankiRequestBody } from '$lib/anki-connect/request';
 
 const DEFAULT_URL = 'http://127.0.0.1:8765';
 
@@ -21,7 +22,7 @@ async function requestAnkiPermission(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ action: 'requestPermission', version: 6 })
+      body: ankiRequestBody('requestPermission')
     });
     const json = (await res.json()) as { result?: { permission?: string } };
     return json.result?.permission === 'granted';
@@ -67,7 +68,7 @@ export function createMokuroFetch(url: string): typeof fetch {
 async function createDeck(mokuroFetch: typeof fetch, url: string, deck: string) {
   const response = await mokuroFetch(url, {
     method: 'POST',
-    body: JSON.stringify({ action: 'createDeck', params: { deck }, version: 6 })
+    body: ankiRequestBody('createDeck', { deck })
   });
   await response.json().catch(() => null);
 }
@@ -84,7 +85,11 @@ function sanitizeTags(tags: string[]): string[] {
 export function createMokuroAnkiTransport(): AnkiTransport {
   const url = get(settings).ankiConnectSettings.url || DEFAULT_URL;
   const mokuroFetch = createMokuroFetch(url);
-  const base = createAnkiConnectTransport({ server: url, fetch: mokuroFetch as never });
+  const base = createAnkiConnectTransport({
+    server: url,
+    apiKey: get(settings).ankiConnectSettings.apiKey || null,
+    fetch: mokuroFetch as never
+  });
 
   const transport: AnkiTransport = {
     // Decks like `Mining::{series}` may not exist yet, so create the deck first.

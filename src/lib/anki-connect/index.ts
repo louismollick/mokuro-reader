@@ -17,6 +17,7 @@ import { settings, DEFAULT_MODEL_CONFIGS } from '$lib/settings';
 import { showSnackbar } from '$lib/util';
 import { isMobilePlatform } from '$lib/util/platform';
 import { get } from 'svelte/store';
+import { ankiRequestBody } from './request';
 
 export * from './cropper';
 
@@ -299,7 +300,7 @@ async function ankiConnectRaw(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ action, params, version: 6 })
+      body: ankiRequestBody(action, params)
     });
     const json = await res.json();
     if (json.error) {
@@ -460,7 +461,7 @@ async function requestAnkiPermission(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ action: 'requestPermission', version: 6 })
+      body: ankiRequestBody('requestPermission')
     });
     const json = await res.json();
     return json.result?.permission === 'granted';
@@ -480,7 +481,7 @@ export async function testConnection(testUrl?: string): Promise<ConnectionTestRe
   try {
     const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ action: 'version', version: 6 })
+      body: ankiRequestBody('version')
     });
 
     const json = await res.json();
@@ -547,7 +548,7 @@ export async function ankiConnect(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      body: JSON.stringify({ action, params, version: 6 })
+      body: ankiRequestBody(action, params)
     });
     const json = await res.json();
 

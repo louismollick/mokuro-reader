@@ -9,6 +9,16 @@ import {
 } from './settings';
 
 describe('migrateProfiles', () => {
+  it('preserves Anki API keys across repeated profile migrations', () => {
+    const initial = migrateProfiles({
+      Test: { ankiConnectSettings: { apiKey: 'saved-key' } } as unknown as Parameters<
+        typeof migrateProfiles
+      >[0][string]
+    });
+    const reloaded = migrateProfiles(JSON.parse(JSON.stringify(initial)));
+    expect(reloaded.Test.ankiConnectSettings.apiKey).toBe('saved-key');
+  });
+
   it('adds yomitanPopupOnTextBoxTap default for existing profiles', () => {
     const migrated = migrateProfiles({
       LegacyProfile: {
