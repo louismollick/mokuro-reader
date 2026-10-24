@@ -18,7 +18,7 @@ export type DetectRequest = {
   letterbox: Letterbox;
   modelUrl: string;
 };
-/** Asks the worker to load the model without running it. */
+/** Asks the worker to load the model and run it once on a blank input. */
 export type WarmRequest = { warm: true; modelUrl: string };
 export type DetectResponse = { id: number; panels?: PanelBox[]; error?: string };
 

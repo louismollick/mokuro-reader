@@ -12,6 +12,18 @@ ort.env.wasm.wasmPaths = { wasm: wasmUrl };
 
 let session: Promise<ort.InferenceSession> | undefined;
 
+/** Runs the model on a blank input once, so the first real page doesn't pay for kernel setup. */
+async function warmUp(modelUrl: string) {
+  const s = await getSession(modelUrl);
+  const blank = new ort.Tensor('float32', new Float32Array(3 * INPUT_SIZE * INPUT_SIZE), [
+    1,
+    3,
+    INPUT_SIZE,
+    INPUT_SIZE
+  ]);
+  await s.run({ [s.inputNames[0]]: blank });
+}
+
 function getSession(modelUrl: string): Promise<ort.InferenceSession> {
   session ??= ort.InferenceSession.create(modelUrl, { executionProviders: ['wasm'] });
   // Let the next request retry if loading failed (e.g. offline before the first cache fill).
@@ -19,9 +31,9 @@ function getSession(modelUrl: string): Promise<ort.InferenceSession> {
   return session;
 }
 
-self.onmessage = async ({ data }: MessageEvent<DetectRequest | WarmRequest>) => {
+async function handle(data: DetectRequest | WarmRequest) {
   if (data.warm) {
-    await getSession(data.modelUrl).catch(() => {});
+    await warmUp(data.modelUrl).catch(() => {});
     return;
   }
   try {
@@ -44,4 +56,10 @@ self.onmessage = async ({ data }: MessageEvent<DetectRequest | WarmRequest>) => 
       error: err instanceof Error ? err.message : 'Panel detection failed'
     } satisfies DetectResponse);
   }
+}
+
+// One run at a time: a warm-up in flight must not overlap a real page.
+let queue = Promise.resolve();
+self.onmessage = ({ data }: MessageEvent<DetectRequest | WarmRequest>) => {
+  queue = queue.then(() => handle(data));
 };

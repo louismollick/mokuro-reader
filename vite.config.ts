@@ -16,6 +16,8 @@ export default defineConfig({
     }
   },
   optimizeDeps: {
+    // Only the panel worker imports it, so dev would otherwise find it on the first Mining and reload.
+    include: ['onnxruntime-web/wasm'],
     exclude: ['clsx', 'tailwind-merge', 'apexcharts', '@floating-ui/dom']
   },
   build: {
