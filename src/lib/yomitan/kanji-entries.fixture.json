@@ -1,0 +1,327 @@
+{
+  "学": [
+    {
+      "type": "kanji",
+      "character": "学",
+      "dictionary": "KANJIDIC [2026-296]",
+      "onyomi": ["ガク"],
+      "kunyomi": ["まな.ぶ"],
+      "definitions": ["study", "learning", "science"],
+      "stats": {
+        "misc": [
+          {
+            "name": "freq",
+            "value": "63"
+          },
+          {
+            "name": "grade",
+            "value": "1"
+          },
+          {
+            "name": "jlpt",
+            "value": "4"
+          },
+          {
+            "name": "strokes",
+            "value": "8"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "学",
+      "dictionary": "JPDB Kanji",
+      "onyomi": [],
+      "kunyomi": ["がく(69%)", "がっ(26%)", "まな(4%)", "まなび"],
+      "definitions": [
+        "学校",
+        "学園",
+        "大学",
+        "学ぶ",
+        "学生",
+        "小学生",
+        "中学",
+        "入学",
+        "小学校",
+        "中学生",
+        "見学",
+        "学院",
+        "学年",
+        "科学",
+        "数学",
+        "",
+        "漢字分解:",
+        "𭕄 冖 子"
+      ],
+      "stats": {
+        "misc": [
+          {
+            "name": "旧字体",
+            "value": "學"
+          },
+          {
+            "name": "漢字検定",
+            "value": "10"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "学",
+      "dictionary": "TheKanjiMap Kanji Radicals/Composition",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["＝＝＝＝＝分解＝＝＝＝＝", "  子"],
+      "stats": {}
+    },
+    {
+      "type": "kanji",
+      "character": "学",
+      "dictionary": "Similar Kanji",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["字", "宇"],
+      "stats": {}
+    }
+  ],
+  "語": [
+    {
+      "type": "kanji",
+      "character": "語",
+      "dictionary": "KANJIDIC [2026-296]",
+      "onyomi": ["ゴ"],
+      "kunyomi": ["かた.る", "かた.らう"],
+      "definitions": ["word", "speech", "language"],
+      "stats": {
+        "misc": [
+          {
+            "name": "freq",
+            "value": "301"
+          },
+          {
+            "name": "grade",
+            "value": "2"
+          },
+          {
+            "name": "jlpt",
+            "value": "4"
+          },
+          {
+            "name": "strokes",
+            "value": "14"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "語",
+      "dictionary": "JPDB Kanji",
+      "onyomi": [],
+      "kunyomi": ["ご(45%)", "かた(34%)", "がたり(15%)", "きょ(2%)", "がた(1%)", "ぎょ"],
+      "definitions": [
+        "語る",
+        "物語",
+        "単語",
+        "英語",
+        "日本語",
+        "語りかける",
+        "敬語",
+        "言語",
+        "語",
+        "物語る",
+        "語り合う",
+        "語尾",
+        "語り継ぐ",
+        "国語",
+        "夢物語",
+        "",
+        "漢字分解:",
+        "言 五 口"
+      ],
+      "stats": {
+        "misc": [
+          {
+            "name": "漢字検定",
+            "value": "9"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "語",
+      "dictionary": "TheKanjiMap Kanji Radicals/Composition",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["＝＝＝＝＝分解＝＝＝＝＝", "  言　吾"],
+      "stats": {}
+    },
+    {
+      "type": "kanji",
+      "character": "語",
+      "dictionary": "Similar Kanji",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["話", "詰", "諾"],
+      "stats": {}
+    }
+  ],
+  "大": [
+    {
+      "type": "kanji",
+      "character": "大",
+      "dictionary": "KANJIDIC [2026-296]",
+      "onyomi": ["ダイ", "タイ"],
+      "kunyomi": ["おお-", "おお.きい", "-おお.いに"],
+      "definitions": ["large", "big"],
+      "stats": {
+        "misc": [
+          {
+            "name": "freq",
+            "value": "7"
+          },
+          {
+            "name": "grade",
+            "value": "1"
+          },
+          {
+            "name": "jlpt",
+            "value": "4"
+          },
+          {
+            "name": "strokes",
+            "value": "3"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "大",
+      "dictionary": "JPDB Kanji",
+      "onyomi": [],
+      "kunyomi": [
+        "だい(54%)",
+        "おお(24%)",
+        "たい(20%)",
+        "お",
+        "た",
+        "おう",
+        "だ",
+        "のおお",
+        "のおおまえつぎ",
+        "のおと",
+        "おおき",
+        "て",
+        "おと"
+      ],
+      "definitions": [
+        "大丈夫",
+        "大きい",
+        "大きな",
+        "大変",
+        "大事",
+        "大",
+        "大切",
+        "大好き",
+        "巨大",
+        "大人",
+        "大量",
+        "大した",
+        "大きくなる",
+        "大体",
+        "大学",
+        "",
+        "漢字分解:",
+        "一 人"
+      ],
+      "stats": {
+        "misc": [
+          {
+            "name": "漢字検定",
+            "value": "10"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "大",
+      "dictionary": "TheKanjiMap Kanji Radicals/Composition",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["部首：大", "意味：large, big", "読み：だい", "例え：大天奈奧"],
+      "stats": {
+        "misc": [
+          {
+            "name": "画数",
+            "value": "3"
+          }
+        ]
+      }
+    },
+    {
+      "type": "kanji",
+      "character": "大",
+      "dictionary": "TheKanjiMap Kanji Radicals/Composition",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": [
+        "＝＝＝＝組み合わせ＝＝＝",
+        "因　イン",
+        "天　テン",
+        "太　タイ　タ",
+        "夫　フ　フウ　ブ",
+        "夬　カイ　ケツ　ケチ",
+        "夭　ヨウ　オウ　カ",
+        "央　オウ",
+        "夲　ホン",
+        "夷　イ",
+        "夸　コ　カ",
+        "夾　キョウ　コウ",
+        "奄　エン",
+        "奇　キ",
+        "奈　ナ　ナイ　ダイ",
+        "奎　ケイ　キ",
+        "奐　カン",
+        "契　ケイ",
+        "奔　ホン",
+        "奕　エキ　ヤク",
+        "套　トウ",
+        "奘　ジョウ　ソウ",
+        "奚　ケイ",
+        "奠　テン　デン　テイ",
+        "奢　シャ",
+        "奥　オウ",
+        "奧　オウ　オク",
+        "奨　ショウ　ソウ",
+        "奩　レン",
+        "奪　ダツ",
+        "奬　ショウ　ソウ",
+        "奮　フン",
+        "尖　セン",
+        "戻　レイ",
+        "樊　ハン",
+        "爽　ソウ",
+        "犬　ケン",
+        "突　トツ　カ",
+        "美　ビ　ミ",
+        "臭　シュウ",
+        "遼　リョウ"
+      ],
+      "stats": {}
+    },
+    {
+      "type": "kanji",
+      "character": "大",
+      "dictionary": "Similar Kanji",
+      "onyomi": [],
+      "kunyomi": [],
+      "definitions": ["犬", "太", "丈"],
+      "stats": {}
+    }
+  ]
+}
