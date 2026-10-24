@@ -33,13 +33,14 @@ keyboard shortcuts and supplies intent callbacks (`onPageFlip`,
 
 ## The shared machinery
 
-| Module               | Owns                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pointer-tracker.ts` | THE pointer state machine: pan threshold, pinch upgrade/downgrade/re-baseline, capture policy, leak-proof window-level release, `wasDrag`/`wasPinch` |
-| `gesture-target.ts`  | Element-role classification (`textbox` / `interactive` / `page`) and the keyboard-ignore guard                                                       |
-| `tap.ts`             | Tap vs double-tap timing (300 ms), deferred vs immediate commit, text-box dismissal swallowing                                                       |
-| `swipe.ts`           | Pure swipe-to-flip classification (edge gating #186, pinch suppression, thresholds)                                                                  |
-| `motion-gate.ts`     | The interrupt contract: what must stop before new motion starts (`beforeZoom` / `beforeManualPan` / `beforeAnimatedScroll` / `beforeNav`)            |
+| Module               | Owns                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pointer-tracker.ts` | THE pointer state machine: pan threshold, pinch upgrade/downgrade/re-baseline, capture policy, leak-proof window-level release, `wasDrag`/`wasPinch`       |
+| `gesture-target.ts`  | Element-role classification (`textbox` / `interactive` / `page`) and the keyboard-ignore guard                                                             |
+| `tap.ts`             | Tap vs double-tap timing (300 ms), deferred vs immediate commit, text-box dismissal swallowing                                                             |
+| `text-box-tap.ts`    | Tap Lookup intent: which text-box clicks are lookups (no drag, no text selection left), and when they commit (deferred behind Capture's double-tap window) |
+| `swipe.ts`           | Pure swipe-to-flip classification (edge gating #186, pinch suppression, thresholds)                                                                        |
+| `motion-gate.ts`     | The interrupt contract: what must stop before new motion starts (`beforeZoom` / `beforeManualPan` / `beforeAnimatedScroll` / `beforeNav`)                  |
 
 Surfaces hold only **policy** (config objects) and **actuation** (scroll
 writes, camera moves); classification and lifecycle live in the shared
@@ -58,6 +59,21 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
 - Mouse/pen drags on a text box are **text selection** (Yomitan/Migaku
   scanning) — never a pan. Single-finger **touch** is the exception: it
   pans everywhere, because touch has no drag-selection gesture.
+- **A single tap on a text box is Tap Lookup** (the "Tap to look up"
+  setting): the surface hands every text-box click to its `TextBoxTapRouter`
+  with its tracker's `wasDrag`, and a qualifying tap becomes the `onTextBoxTap`
+  intent that Reader turns into a Lookup Sheet. A click after a drag is not a
+  tap; a mouse/pen click that left a non-collapsed text selection is not a tap
+  either (drags select text for Yomitan/Migaku, a lookup must never interrupt
+  them); touch never checks selection. When Capture's double-tap trigger is on
+  (`triggerMethod` `doubleTap` or `both`) the lookup waits out the 300 ms
+  `TapDiscriminator` window and a second tap cancels it, so one gesture never
+  both captures and looks up; otherwise it commits immediately. Surfaces never
+  look at the lookup itself: they only route (`onTextBoxTap`).
+- **A tap on bare page while a Lookup Sheet is open only closes it.** Surfaces
+  call `onDismissLookup` before the overlay toggle and stop if it returns true
+  (and `cancel()` the discriminator, which also drops the pending text-box
+  dismissal below). It never turns the page, toggles the overlay or zooms.
 - After interacting with a text box, the next tap outside is a
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).

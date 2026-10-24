@@ -92,6 +92,36 @@ export function offsetAlongLine(
   return Math.min(Math.max(Math.floor(fraction * length), 0), length - 1);
 }
 
+/**
+ * The character of a line whose glyph box is nearest the point. Hidden text (the normal state of
+ * a Text Box) has no hit target but still has layout, so its characters can be measured. Null
+ * when the line has no layout at all.
+ */
+function nearestChar(line: Element, x: number, y: number): number | null {
+  let best: number | null = null;
+  let bestDistance = Infinity;
+  const length = line.textContent?.length ?? 0;
+  for (let char = 0; char < length; char++) {
+    const start = positionInLine(line, char);
+    const end = positionInLine(line, char + 1);
+    if (!start || !end) continue;
+    const range = document.createRange();
+    range.setStart(start.offsetNode, start.offset);
+    range.setEnd(end.offsetNode, end.offset);
+    for (const rect of range.getClientRects()) {
+      const distance = Math.hypot(
+        Math.max(rect.left - x, 0, x - rect.right),
+        Math.max(rect.top - y, 0, y - rect.bottom)
+      );
+      if (distance < bestDistance) {
+        best = char;
+        bestDistance = distance;
+      }
+    }
+  }
+  return best;
+}
+
 /** The line whose rect is nearest the point (zero distance when inside). */
 function nearestLine(textBox: Element, x: number, y: number): HTMLElement | null {
   let best: HTMLElement | null = null;
@@ -112,8 +142,9 @@ function nearestLine(textBox: Element, x: number, y: number): HTMLElement | null
 
 /**
  * The offset in `box.text` of the character tapped at viewport point (x, y): from the caret APIs
- * when they land in this Text Box's own lines, else geometrically on the nearest line. Null when
- * the box has no usable text.
+ * when they land in this Text Box's own lines, else geometrically: the nearest character of the
+ * nearest line, or the position along the line when the text has no layout. Null when the box has
+ * no usable text.
  */
 export function tapOffset(
   textBox: HTMLElement,
@@ -137,6 +168,8 @@ export function tapOffset(
   const lineIndex = Number(line.dataset.lineIndex);
   const length = lines[lineIndex]?.length ?? 0;
   if (length === 0) return null;
+  const measured = nearestChar(line, x, y);
+  if (measured !== null) return box.toOffset(lineIndex, measured);
   const vertical = getComputedStyle(textBox).writingMode.startsWith('vertical');
   return box.toOffset(
     lineIndex,

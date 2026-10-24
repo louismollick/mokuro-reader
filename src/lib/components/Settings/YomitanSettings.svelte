@@ -244,7 +244,7 @@
       checked={$settings.yomitanPopupOnTextBoxTap}
       onchange={(event) => updatePopupSetting((event.currentTarget as HTMLInputElement).checked)}
     >
-      Enable textbox tap/click Yomitan popup
+      Tap to look up
     </Toggle>
 
     <div class="flex flex-col gap-2">

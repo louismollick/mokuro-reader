@@ -47,19 +47,9 @@
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
-    /** Callback when a text box is tapped/clicked */
-    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
-  let {
-    page,
-    src,
-    volumeUuid,
-    pageIndex,
-    forceVisible = false,
-    onContextMenu,
-    onTextBoxActivate
-  }: Props = $props();
+  let { page, src, volumeUuid, pageIndex, forceVisible = false, onContextMenu }: Props = $props();
 
   interface TextBoxData {
     left: string;
@@ -701,20 +691,6 @@
     event.clipboardData?.setData('text/plain', stripped);
     event.preventDefault();
   }
-
-  function handleTextBoxClick(event: MouseEvent, lines: string[], blockIndex: number) {
-    const text = lines
-      .join(' ')
-      .replace(/[\r\n\t]/g, '')
-      .trim();
-    if (!text) return;
-
-    onTextBoxActivate?.({
-      lines,
-      text,
-      blockIndex
-    });
-  }
 </script>
 
 {#each textBoxes as { fontSize, height, left, lines, top, width, writingMode, useMinDimensions, isOriginalMode, lineLayouts, layoutSignature, blockIndex }, index (`${volumeUuid}-textBox-${index}`)}
@@ -723,6 +699,7 @@
     use:handleTextBoxHover={[index, fontSize]}
     use:positionPerLine={`${display}|${$settings.fontSize}|${layoutSignature}|${fontEpoch}`}
     class="textBox"
+    data-block-index={blockIndex}
     class:originalMode={isOriginalMode}
     class:perLine={usePerLine}
     class:forceVisible
@@ -741,13 +718,13 @@
     role="none"
     oncontextmenu={(e) => handleContextMenu(e, lines, blockIndex)}
     ondblclick={(e) => onDoubleTap(e, lines, blockIndex)}
-    onclick={(e) => handleTextBoxClick(e, lines, blockIndex)}
     oncopy={onCopy}
   >
     <p>
       {#if usePerLine && lineLayouts}
         {#each lines as line, lineIndex}{#if !lineLayouts[lineIndex].hidden}<span
               class="ocr-line positionedLine"
+              data-line-index={lineIndex}
               class:wrappedLine={lineLayouts[lineIndex].wrap}
               data-target-left={lineLayouts[lineIndex].left}
               data-target-top={lineLayouts[lineIndex].top}
@@ -771,7 +748,9 @@
                 : undefined}>{line}</span
             >{/if}{/each}
       {:else}
-        {#each lines as line}<span class="ocr-line">{line}</span>{/each}
+        {#each lines as line, lineIndex}<span class="ocr-line" data-line-index={lineIndex}
+            >{line}</span
+          >{/each}
       {/if}
     </p>
   </div>

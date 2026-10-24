@@ -83,12 +83,19 @@ export function parseJpdbKanji(entry: KanjiEntryLike) {
 }
 
 /**
- * TheKanjiMap Kanji Radicals/Composition has several rows per kanji; the one whose first line is
- * `＝＝＝＝＝分解＝＝＝＝＝` lists the components, one or more per line, separated by spaces.
+ * TheKanjiMap Kanji Radicals/Composition: a row holds sections, each opened by a `＝＝＝＝＝…＝＝＝`
+ * heading line. The `分解` (decomposition) section lists the components, one or more per line
+ * separated by spaces; `組み合わせ` (compositions, kanji that contain this one) follows it. Other
+ * rows (radical info, `部首：…`) have no such heading.
  */
 export function parseTheKanjiMapComponents(entry: KanjiEntryLike): string[] {
-  const [heading, ...lines] = entry.definitions;
-  return heading?.includes('分解') ? lines.flatMap(splitParts) : [];
+  const start = entry.definitions.findIndex(
+    (line) => line.startsWith('＝') && line.includes('分解')
+  );
+  if (start < 0) return [];
+  const rest = entry.definitions.slice(start + 1);
+  const end = rest.findIndex((line) => line.startsWith('＝'));
+  return (end < 0 ? rest : rest.slice(0, end)).flatMap(splitParts);
 }
 
 /** Similar Kanji (built by scripts/build-similar-kanji-dictionary.mjs): the meanings are the similar kanji. */

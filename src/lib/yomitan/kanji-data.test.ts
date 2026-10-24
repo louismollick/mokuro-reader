@@ -59,6 +59,11 @@ describe('parseTheKanjiMapComponents', () => {
     expect(parseTheKanjiMapComponents(from('語', 'TheKanjiMap')[0])).toEqual(['言', '吾']);
   });
 
+  it('stops at the compositions section that follows the decomposition', () => {
+    const rows = from('言', 'TheKanjiMap');
+    expect(rows.flatMap(parseTheKanjiMapComponents)).toEqual(['口']);
+  });
+
   it('ignores the other rows (radical info, compositions)', () => {
     const rows = from('大', 'TheKanjiMap');
     expect(rows).toHaveLength(2);

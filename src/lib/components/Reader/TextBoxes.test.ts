@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, fireEvent } from '@testing-library/svelte';
+import { render } from '@testing-library/svelte';
 import { writable } from 'svelte/store';
 import TextBoxes from './TextBoxes.svelte';
 
@@ -26,8 +26,7 @@ vi.mock('$lib/anki-connect', () => ({
 }));
 
 describe('TextBoxes', () => {
-  it('emits onTextBoxActivate with joined textbox text on click', async () => {
-    const onTextBoxActivate = vi.fn();
+  it('tags each text box and rendered line with the indices Tap Lookup reads back', () => {
     const page = {
       img_width: 1000,
       img_height: 1000,
@@ -42,19 +41,12 @@ describe('TextBoxes', () => {
       ]
     } as any;
 
-    const { container } = render(TextBoxes, {
-      page,
-      volumeUuid: 'vol-1',
-      onTextBoxActivate
-    });
+    const { container } = render(TextBoxes, { page, volumeUuid: 'vol-1' });
 
     const textBox = container.querySelector('.textBox') as HTMLElement;
-    await fireEvent.click(textBox);
-
-    expect(onTextBoxActivate).toHaveBeenCalledWith({
-      lines: ['日本語', 'テスト'],
-      text: '日本語 テスト',
-      blockIndex: 0
-    });
+    expect(textBox.dataset.blockIndex).toBe('0');
+    const lines = [...textBox.querySelectorAll<HTMLElement>('.ocr-line')];
+    expect(lines.map((line) => line.dataset.lineIndex)).toEqual(['0', '1']);
+    expect(lines.map((line) => line.textContent)).toEqual(['日本語', 'テスト']);
   });
 });

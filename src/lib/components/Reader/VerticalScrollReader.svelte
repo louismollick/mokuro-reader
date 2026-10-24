@@ -24,6 +24,11 @@
   import { volumeEdgeNav } from '$lib/reader/page-nav';
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { TapDiscriminator } from '$lib/reader/input/tap';
+  import {
+    TextBoxTapRouter,
+    captureUsesDoubleTap,
+    type TextBoxTap
+  } from '$lib/reader/input/text-box-tap';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
   import { PageWindow, seedPageWindow } from '$lib/reader/page-window';
   import { onMount, onDestroy, tick } from 'svelte';
@@ -40,7 +45,10 @@
     /** The gap-adjust wheel chord changed the divider gap to this value (px). */
     onGapChange?: (px: number) => void;
     onContextMenu?: (data: any) => void;
-    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
+    /** A lone tap on a text box (Tap Lookup). */
+    onTextBoxTap?: (tap: TextBoxTap) => void;
+    /** A tap on the page background: returns true if it closed the Lookup Sheet, so it does nothing else. */
+    onDismissLookup?: () => boolean;
   }
 
   let {
@@ -54,7 +62,8 @@
     onOverlayToggle,
     onGapChange,
     onContextMenu,
-    onTextBoxActivate
+    onTextBoxTap,
+    onDismissLookup
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -490,10 +499,26 @@
   });
 
   function handleClick(e: MouseEvent) {
-    if (gestureTargetRole(e.target) !== 'page') return;
-    if (tracker.wasDrag) return;
+    const role = gestureTargetRole(e.target);
+    if (role === 'textbox') {
+      textBoxTaps.click(e, tracker.wasDrag);
+      return;
+    }
+    if (role !== 'page' || tracker.wasDrag) return;
+    // With a Lookup Sheet open the tap outside the text boxes only closes it.
+    if (onDismissLookup?.()) {
+      taps.cancel();
+      textBoxTaps.cancel();
+      return;
+    }
     taps.tap(e.clientX, e.clientY);
   }
+
+  // Tap Lookup: a lone tap on a text box asks Reader for a lookup.
+  const textBoxTaps = new TextBoxTapRouter({
+    deferForDoubleTap: () => captureUsesDoubleTap($settings.ankiConnectSettings.triggerMethod),
+    onLookup: (tap) => onTextBoxTap?.(tap)
+  });
 
   // ============================================================
   // Resize
@@ -526,6 +551,7 @@
     outerDiv?.removeEventListener('wheel', handleWheel);
     tracker.detach();
     taps.cancel();
+    textBoxTaps.cancel();
     if (settleTimer) clearTimeout(settleTimer);
   });
 </script>
@@ -583,7 +609,6 @@
                   pageIndex={i}
                   forceVisible={missingPagePaths.has(page.img_path)}
                   {onContextMenu}
-                  {onTextBoxActivate}
                 />
               {/if}
             </div>

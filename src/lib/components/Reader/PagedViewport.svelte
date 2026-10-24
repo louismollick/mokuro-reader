@@ -25,6 +25,11 @@
   import { PointerGestureTracker, zoomGestureConfig } from '$lib/reader/input/pointer-tracker';
   import { gestureTargetRole } from '$lib/reader/input/gesture-target';
   import { TapDiscriminator } from '$lib/reader/input/tap';
+  import {
+    TextBoxTapRouter,
+    captureUsesDoubleTap,
+    type TextBoxTap
+  } from '$lib/reader/input/text-box-tap';
   import { classifySwipe } from '$lib/reader/input/swipe';
   import type { MotionGate } from '$lib/reader/input/motion-gate';
 
@@ -48,11 +53,24 @@
     onOverlayToggle?: () => void;
     /** The gap-adjust wheel chord changed the page gap to this value (px). */
     onGapChange?: (px: number) => void;
+    /** A lone tap on a text box (Tap Lookup). */
+    onTextBoxTap?: (tap: TextBoxTap) => void;
+    /** A tap on the page background: returns true if it closed the Lookup Sheet, so it does nothing else. */
+    onDismissLookup?: () => boolean;
     children?: Snippet;
   }
 
-  let { contentSize, pageKey, rtl, onPageFlip, onOverlayToggle, onGapChange, children }: Props =
-    $props();
+  let {
+    contentSize,
+    pageKey,
+    rtl,
+    onPageFlip,
+    onOverlayToggle,
+    onGapChange,
+    onTextBoxTap,
+    onDismissLookup,
+    children
+  }: Props = $props();
 
   let wrapperEl: HTMLDivElement | undefined = $state();
   let viewportWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
@@ -304,10 +322,26 @@
   });
 
   function handleClick(e: MouseEvent) {
-    if (gestureTargetRole(e.target) !== 'page') return;
-    if (tracker.wasDrag) return;
+    const role = gestureTargetRole(e.target);
+    if (role === 'textbox') {
+      textBoxTaps.click(e, tracker.wasDrag);
+      return;
+    }
+    if (role !== 'page' || tracker.wasDrag) return;
+    // With a Lookup Sheet open the tap outside the text boxes only closes it.
+    if (onDismissLookup?.()) {
+      taps.cancel();
+      textBoxTaps.cancel();
+      return;
+    }
     taps.tap(e.clientX, e.clientY);
   }
+
+  // Tap Lookup: a lone tap on a text box asks Reader for a lookup.
+  const textBoxTaps = new TextBoxTapRouter({
+    deferForDoubleTap: () => captureUsesDoubleTap($settings.ankiConnectSettings.triggerMethod),
+    onLookup: (tap) => onTextBoxTap?.(tap)
+  });
 
   onMount(() => {
     pagedZoom.set(api);
@@ -319,6 +353,7 @@
     pagedZoom.set(undefined);
     tracker.detach();
     taps.cancel();
+    textBoxTaps.cancel();
     wrapperEl?.removeEventListener('wheel', handleWheel);
     controller.destroy();
     camera.destroy();
