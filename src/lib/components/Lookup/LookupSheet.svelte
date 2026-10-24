@@ -111,7 +111,7 @@
   });
 
   let view = $derived(currentView(history));
-  let wordText = (index: number) => session?.tokens[index]?.text;
+  const wordText = (index: number) => session?.tokens[index]?.text;
   let backLabel = $derived(backTitle(history, wordText));
 
   // ---- Page highlight --------------------------------------------------------------------
@@ -497,6 +497,10 @@
     min-height: 32px;
     font-size: 13px;
     color: #9a9a9a;
+  }
+
+  .sheet :global([lang='ja']) {
+    font-family: 'Noto Sans JP', sans-serif;
   }
 
   button:focus-visible {
