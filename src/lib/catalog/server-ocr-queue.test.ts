@@ -770,7 +770,7 @@ describe('the queue under a bunko bearer token', () => {
 
   it('proxies unauthenticated GETs to approved hosts, and never ones carrying the account header', async () => {
     const fetchMock = vi.fn(
-      async (_url: string, _init?: RequestInit) => new Response('x', { status: 200 })
+      async (_url: RequestInfo | URL, _init?: RequestInit) => new Response('x', { status: 200 })
     );
     const url = 'https://mokuro.moe/manga/S/V.mokuro';
     await fetchWithQueueAuth(url, {}, CONNECTED, 'none', fetchMock);
