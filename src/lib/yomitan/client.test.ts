@@ -1,5 +1,15 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
+/** What the worker stand-in and the connector saw. */
+const engine = vi.hoisted(() => ({
+  connects: 0,
+  disposed: 0,
+  workers: [] as {
+    listeners: Record<string, () => void>;
+    terminate: ReturnType<typeof vi.fn>;
+  }[]
+}));
+
 const state = vi.hoisted(() => ({
   profile: {
     options: {
@@ -18,6 +28,7 @@ const state = vi.hoisted(() => ({
 // The engine runs in a worker; the test connects straight to an in-memory client instead.
 vi.mock('@yomitan-core/web', () => ({
   connectYomitan: async () => ({
+    id: ++engine.connects,
     profile: {
       get: () => structuredClone(state.profile),
       set: async (next: typeof state.profile) => {
@@ -38,7 +49,9 @@ vi.mock('@yomitan-core/web', () => ({
         { title: 'Off', counts: { terms: { total: 9 } } }
       ]
     },
-    dispose: async () => {}
+    dispose: async () => {
+      engine.disposed++;
+    }
   })
 }));
 const settingsStore = await vi.hoisted(async () => {
@@ -62,15 +75,21 @@ describe('editProfile', () => {
     vi.stubGlobal(
       'Worker',
       class {
-        addEventListener() {}
+        listeners: Record<string, () => void> = {};
+        terminate = vi.fn();
+        constructor() {
+          engine.workers.push(this);
+        }
+        addEventListener(type: string, listener: () => void) {
+          this.listeners[type] = listener;
+        }
         postMessage() {}
-        terminate() {}
       }
     );
     vi.stubGlobal(
       'MessageChannel',
       class {
-        port1 = {};
+        port1 = { close: vi.fn(), addEventListener() {} };
         port2 = {};
       }
     );
@@ -85,6 +104,22 @@ describe('editProfile', () => {
     await getYomitan();
     settingsStore.set({ ankiConnectSettings: { enabled: false } });
     await vi.waitFor(() => expect(state.profile.options.anki.enable).toBe(false));
+  });
+
+  it('drops a client whose worker dies, so the next call connects a fresh one', async () => {
+    vi.resetModules();
+    const fresh = await import('./client');
+    const first = await fresh.getYomitan();
+    const worker = engine.workers.at(-1)!;
+    const disposedBefore = engine.disposed;
+
+    worker.listeners.error();
+    expect(worker.terminate).toHaveBeenCalled();
+    expect(engine.disposed).toBe(disposedBefore + 1);
+
+    const second = await fresh.getYomitan();
+    expect(second).not.toBe(first);
+    expect(engine.workers.at(-1)).not.toBe(worker);
   });
 
   it('makes the first enabled term dictionary the main one, for merged lookups', async () => {

@@ -152,6 +152,13 @@
 
   let start: Date;
 
+  // The edge buttons: with a Lookup Sheet open, the tap only closes it.
+  function edgeLeft(e: MouseEvent) {
+    if (!dismissLookup()) left(e);
+  }
+  function edgeRight(e: MouseEvent) {
+    if (!dismissLookup()) right(e);
+  }
   function mouseDown() {
     start = new Date();
   }
@@ -1211,6 +1218,10 @@
       tap.textBox.closest<HTMLElement>('[data-page-index]')?.dataset.pageIndex
     );
     const blockIndex = Number(tap.textBox.dataset.blockIndex);
+    // A held lookup (Capture double-tap on) may land after a page turn: the box must still be
+    // on screen, on one of the pages being shown.
+    const shown = $settings.continuousScroll || pageIndex === index || pageIndex === index + 1;
+    if (!tap.textBox.isConnected || !shown) return;
     const lines = pages[pageIndex]?.blocks[blockIndex]?.lines.map(processLine);
     if (!lines?.some((line) => line.trim())) return;
 
@@ -1713,26 +1724,26 @@
           class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
           style:margin-left={`${$settings.edgeButtonWidth}px`}
           onmousedown={mouseDown}
-          onmouseup={left}
+          onmouseup={edgeLeft}
         ></button>
         <button
           aria-label="Next page (right edge)"
           class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
           style:margin-right={`${$settings.edgeButtonWidth}px`}
           onmousedown={mouseDown}
-          onmouseup={right}
+          onmouseup={edgeRight}
         ></button>
         <button
           aria-label="Previous page (bottom left)"
           class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
           onmousedown={mouseDown}
-          onmouseup={left}
+          onmouseup={edgeLeft}
         ></button>
         <button
           aria-label="Next page (bottom right)"
           class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
           onmousedown={mouseDown}
-          onmouseup={right}
+          onmouseup={edgeRight}
         ></button>
         <div class="grid" style:filter={$imageFilter} id="manga-panel">
           {#key page}
@@ -1781,14 +1792,14 @@
       <button
         aria-label="Previous page (left edge)"
         onmousedown={mouseDown}
-        onmouseup={left}
+        onmouseup={edgeLeft}
         class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
       <button
         aria-label="Next page (right edge)"
         onmousedown={mouseDown}
-        onmouseup={right}
+        onmouseup={edgeRight}
         class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>

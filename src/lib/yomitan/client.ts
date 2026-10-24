@@ -121,11 +121,34 @@ async function connectEngine(profile: unknown): Promise<Yomitan> {
     const { connectYomitan } = await import('@yomitan-core/web');
     const client = await Promise.race([connectYomitan(port1), failed]);
     engineWorker = worker;
+    retireOnWorkerFailure(worker, port1, client);
     return client;
   } catch (error) {
     worker.terminate();
     throw error;
   }
+}
+
+/**
+ * If the worker dies after connecting, requests would wait forever and the singleton would keep
+ * handing out the dead client. Dispose it (which rejects what is still waiting), close the port,
+ * stop the worker and forget the client so the next `getYomitan()` connects a fresh one.
+ */
+function retireOnWorkerFailure(worker: Worker, port: MessagePort, client: Yomitan) {
+  const retire = () => {
+    if (engineWorker !== worker) return;
+    engineWorker = null;
+    clientPromise = null;
+    stopMirroringAnki?.();
+    stopMirroringAnki = null;
+    void client.dispose().catch(() => {});
+    port.close();
+    worker.terminate();
+    showSnackbar('The dictionary engine stopped. Try again.');
+  };
+  worker.addEventListener('error', retire);
+  worker.addEventListener('messageerror', retire);
+  port.addEventListener('messageerror', retire);
 }
 
 async function createClient(): Promise<Yomitan> {

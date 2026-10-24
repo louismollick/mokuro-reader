@@ -25,7 +25,7 @@
  */
 
 /** The double-tap window — shared by both commit policies. */
-const DOUBLE_TAP_DELAY_MS = 300;
+export const DOUBLE_TAP_DELAY_MS = 300;
 
 export interface TapDiscriminatorConfig {
   /** See module doc. Default 'deferred'. */

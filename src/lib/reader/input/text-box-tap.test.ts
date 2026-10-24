@@ -3,7 +3,8 @@ import { TextBoxTapRouter } from './text-box-tap';
 
 function setup(defer: boolean) {
   document.body.innerHTML =
-    '<div class="textBox"><span id="in">猫</span></div><div id="out"></div>';
+    '<div class="textBox"><span id="in">猫</span></div>' +
+    '<div class="textBox"><span id="other">犬</span></div><div id="out"></div>';
   const onLookup = vi.fn();
   const router = new TextBoxTapRouter({ deferForDoubleTap: () => defer, onLookup });
   const click = (id: string, init: MouseEventInit = {}) => {
@@ -76,5 +77,40 @@ describe('TextBoxTapRouter', () => {
     router.cancel();
     vi.advanceTimersByTime(1000);
     expect(onLookup).not.toHaveBeenCalled();
+  });
+
+  it('a desktop double-click cancels the held lookup even though it selected a word', () => {
+    const { router, onLookup, click } = setup(true);
+    router.click(click('in'), false);
+    vi.advanceTimersByTime(100);
+    // The browser selected the word before the second click landed.
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('in')!);
+    window.getSelection()!.addRange(range);
+    router.click(click('in', { detail: 2 }), false);
+    vi.advanceTimersByTime(1000);
+    expect(onLookup).not.toHaveBeenCalled();
+  });
+
+  it('a tap on another text box replaces the held one and gets its own window', () => {
+    const { router, onLookup, click } = setup(true);
+    router.click(click('in'), false);
+    vi.advanceTimersByTime(100);
+    router.click(click('other'), false);
+    vi.advanceTimersByTime(299);
+    expect(onLookup).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onLookup).toHaveBeenCalledTimes(1);
+    expect(onLookup.mock.calls[0][0].textBox.textContent).toBe('犬');
+  });
+
+  it('a second tap on the same box but far away is a new tap, not a double', () => {
+    const { router, onLookup, click } = setup(true);
+    router.click(click('in', { clientX: 10, clientY: 10 }), false);
+    vi.advanceTimersByTime(100);
+    router.click(click('in', { clientX: 200, clientY: 200 }), false);
+    vi.advanceTimersByTime(300);
+    expect(onLookup).toHaveBeenCalledTimes(1);
+    expect(onLookup.mock.calls[0][0].x).toBe(200);
   });
 });

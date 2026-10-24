@@ -343,6 +343,12 @@
     onLookup: (tap) => onTextBoxTap?.(tap)
   });
 
+  // A lookup held for Capture's double-tap window must not land on the next page.
+  $effect(() => {
+    void pageKey;
+    textBoxTaps.cancel();
+  });
+
   onMount(() => {
     pagedZoom.set(api);
     tracker.attach();

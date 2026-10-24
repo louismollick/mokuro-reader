@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { createDisplayController, DuplicateNoteError } from 'yomitan-core';
   import type { AnkiNoteContext, TermDictionaryEntry, Yomitan } from 'yomitan-core';
   import { syncAnkiWeb } from '$lib/anki-connect';
@@ -25,23 +26,32 @@
   let hasAudio = $derived(audio.sources.length > 0 || audio.enableDefaultAudioSources);
 
   // One element for the whole entry: iOS only lets `play()` run inside a tap, so the fallback to
-  // the next URL must reuse the element the tap already unlocked.
+  // the next URL must reuse the element the tap already unlocked. The URLs belong to one entry.
   let player: HTMLAudioElement | null = null;
-  let urls: Promise<string[]> | null = null;
+  let urls: { entry: TermDictionaryEntry; found: Promise<string[]> } | null = null;
 
-  /** The audio URLs, resolved once the button is first needed. */
-  function loadUrls() {
-    urls ??= client.audio
-      .urls(headword.term, headword.reading)
-      .then((found) => found.map(({ url }) => url))
-      .catch(() => []);
-    return urls;
+  /** The audio URLs of `target`, resolved once the button is first needed. */
+  function loadUrls(target: TermDictionaryEntry) {
+    if (urls?.entry !== target) {
+      const { term, reading } = primaryHeadword(target);
+      urls = {
+        entry: target,
+        found: client.audio
+          .urls(term, reading)
+          .then((found) => found.map(({ url }) => url))
+          .catch(() => [])
+      };
+    }
+    return urls.found;
   }
 
   async function play() {
+    const target = entry;
     const element = (player ??= new Audio());
-    const candidates = await loadUrls();
+    const candidates = await loadUrls(target);
     for (const url of candidates) {
+      // The user moved on to another word while the sources were resolving.
+      if (target !== entry) return;
       try {
         element.src = url;
         await element.play();
@@ -50,15 +60,34 @@
         // Try the next source.
       }
     }
-    showSnackbar('No audio found.');
+    if (target === entry) showSnackbar('No audio found.');
   }
+
+  // Sound stops with the entry it belongs to, and with the component.
+  $effect(() => {
+    void entry;
+    return () => {
+      player?.pause();
+      urls = null;
+    };
+  });
+  onDestroy(() => {
+    player?.pause();
+    player?.removeAttribute('src');
+    player = null;
+  });
 
   let ankiState = $state<'idle' | 'adding' | 'added' | 'in-anki' | 'error'>('idle');
   /** The card format the button saves with, and why it can't, if it can't. */
   let ankiTarget = $state<{ cardFormatIndex: number; disabled: string | null } | null>(null);
 
+  /** Bumped whenever the entry or controller changes, so a save in flight can tell it is stale. */
+  let generation = 0;
+
   $effect(() => {
     const active = controller;
+    void entry;
+    generation++;
     ankiState = 'idle';
     ankiTarget = null;
     if (!active) return;
@@ -76,21 +105,25 @@
 
   async function addToAnki() {
     if (!controller || ankiState === 'adding') return;
+    // What was saved is the entry as of the tap, whatever the button shows by the time Anki answers.
+    const target = entry;
+    const mine = generation;
     ankiState = 'adding';
     try {
-      await controller.addNote(entry, ankiTarget?.cardFormatIndex ?? 0, noteContext, extraMarkers);
-      noteStates.markAdded(entry);
-      ankiState = 'added';
+      await controller.addNote(target, ankiTarget?.cardFormatIndex ?? 0, noteContext, extraMarkers);
+      noteStates.markAdded(target);
       void syncAnkiWeb();
       showSnackbar('Added note to Anki.');
+      if (mine === generation) ankiState = 'added';
     } catch (error) {
       if (error instanceof DuplicateNoteError) {
-        ankiState = 'in-anki';
+        noteStates.markAdded(target);
+        if (mine === generation) ankiState = 'in-anki';
         return;
       }
       console.error('Failed to add note to Anki:', error);
-      ankiState = 'error';
       showSnackbar(`Failed to add note: ${error instanceof Error ? error.message : error}`);
+      if (mine === generation) ankiState = 'error';
     }
   }
 </script>

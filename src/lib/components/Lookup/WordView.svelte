@@ -5,6 +5,7 @@
     TermDictionaryEntry,
     Yomitan
   } from 'yomitan-core';
+  import { primaryHeadword } from '$lib/yomitan/entry-data';
   import type { NoteStates } from '$lib/yomitan/note-states';
   import Glossary from './Glossary.svelte';
   import Headword from './Headword.svelte';
@@ -41,10 +42,16 @@
     onQuery
   }: Props = $props();
 
+  /** Identifies an entry, so its actions (audio, Anki state) are never reused for another word. */
+  function entryKey(entry: TermDictionaryEntry, index: number) {
+    const { term, reading } = primaryHeadword(entry);
+    return `${index}|${term}|${reading}`;
+  }
+
   let shown = $derived(compact ? entries.slice(0, 1) : entries);
 </script>
 
-{#each shown as entry, index (index)}
+{#each shown as entry, index (entryKey(entry, index))}
   <section class="entry" class:next={index > 0}>
     <div class="flex items-start justify-between gap-3">
       <Headword {entry} {surface} {compact} {onKanji} />

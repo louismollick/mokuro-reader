@@ -8,10 +8,11 @@
  *   Migaku users, which a lookup must never interrupt. Touch has no drag-selection, so it never
  *   checks.
  * - When Capture's double-tap trigger is on, the lookup waits out the double-tap window
- *   (`TapDiscriminator`) and a second tap cancels it, so a Capture never also looks up.
- *   Otherwise it commits immediately.
+ *   (`DOUBLE_TAP_DELAY_MS`, shared with `TapDiscriminator`) and a second tap on the same text box,
+ *   close to the first, cancels it, so a Capture never also looks up. A tap on another box
+ *   replaces the held one. Otherwise it commits immediately.
  */
-import { TapDiscriminator } from './tap';
+import { DOUBLE_TAP_DELAY_MS } from './tap';
 
 export interface TextBoxTap {
   textBox: HTMLElement;
@@ -37,44 +38,55 @@ function leftTextSelection(event: MouseEvent): boolean {
   return !!selection && !selection.isCollapsed && selection.toString() !== '';
 }
 
+/** A second tap further than this from the held one is a new tap, not a double. */
+const MAX_DOUBLE_TAP_DISTANCE_PX = 40;
+
 export class TextBoxTapRouter {
   private config: TextBoxTapConfig;
-  private pending: TextBoxTap | null = null;
-  private discriminator: TapDiscriminator;
+  private pending: { tap: TextBoxTap; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(config: TextBoxTapConfig) {
     this.config = config;
-    this.discriminator = new TapDiscriminator({
-      onTap: () => {
-        const tap = this.pending;
-        this.pending = null;
-        if (tap) this.config.onLookup(tap);
-      },
-      onDoubleTap: () => {
-        this.pending = null;
-      }
-    });
   }
 
   /** Report a click whose target is inside a text box. */
   click(event: MouseEvent, wasDrag: boolean): void {
     const textBox =
       event.target instanceof Element ? event.target.closest<HTMLElement>('.textBox') : null;
-    if (!textBox || wasDrag || leftTextSelection(event)) return;
-
+    if (!textBox) return;
     const tap = { textBox, x: event.clientX, y: event.clientY };
-    if (!this.config.deferForDoubleTap()) {
+
+    // First of all, a second tap on the same spot cancels the held lookup: it is Capture's
+    // double-tap. This comes before the selection check because a desktop double-click selects
+    // a word before its second click lands.
+    const held = this.pending?.tap;
+    if (
+      held &&
+      (event.detail >= 2 ||
+        (held.textBox === textBox &&
+          Math.hypot(held.x - tap.x, held.y - tap.y) <= MAX_DOUBLE_TAP_DISTANCE_PX))
+    ) {
       this.cancel();
+      return;
+    }
+    if (wasDrag || leftTextSelection(event)) return;
+
+    // A tap elsewhere replaces the held one and gets its own window.
+    this.cancel();
+    if (!this.config.deferForDoubleTap()) {
       this.config.onLookup(tap);
       return;
     }
-    this.pending = tap;
-    this.discriminator.tap(tap.x, tap.y);
+    const timer = setTimeout(() => {
+      this.pending = null;
+      this.config.onLookup(tap);
+    }, DOUBLE_TAP_DELAY_MS);
+    this.pending = { tap, timer };
   }
 
-  /** Drop any held lookup (component teardown). */
+  /** Drop any held lookup (component teardown, page change). */
   cancel(): void {
+    if (this.pending) clearTimeout(this.pending.timer);
     this.pending = null;
-    this.discriminator.cancel();
   }
 }

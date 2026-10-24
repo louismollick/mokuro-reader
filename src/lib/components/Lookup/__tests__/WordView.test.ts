@@ -112,6 +112,8 @@ const baseProps = {
 describe('WordView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // jsdom doesn't implement media playback.
+    vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
     vi.stubGlobal(
       'CSSStyleSheet',
       class {
@@ -265,5 +267,66 @@ describe('WordView', () => {
     await fireEvent.click(getByRole('button', { name: 'Play audio' }));
     await waitFor(() => expect(play).toHaveBeenCalledTimes(2));
     play.mockRestore();
+  });
+
+  describe('switching to another word', () => {
+    const other = {
+      ...entry,
+      headwords: [
+        {
+          index: 0,
+          headwordIndex: 0,
+          term: '飲む',
+          reading: 'のむ',
+          sources: [{ isPrimary: true }]
+        }
+      ]
+    } as unknown as TermDictionaryEntry;
+
+    it('plays the new word, not the previous one', async () => {
+      vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+      const view = render(WordView, baseProps);
+      await fireEvent.click(view.getByRole('button', { name: 'Play audio' }));
+      await waitFor(() => expect(client.audio.urls).toHaveBeenCalledWith('食べる', 'たべる'));
+
+      await view.rerender({ entries: [other] });
+      await fireEvent.click(view.getByRole('button', { name: 'Play audio' }));
+      await waitFor(() => expect(client.audio.urls).toHaveBeenLastCalledWith('飲む', 'のむ'));
+    });
+
+    it('does not mark the new word as added when the old word finishes saving', async () => {
+      let finish: () => void = () => {};
+      const addNote = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ noteId: 1, overwritten: false, warnings: [] });
+          })
+      );
+      const getNoteStates = vi.fn(async () => [
+        {
+          entryIndex: 0,
+          cardFormats: [
+            { cardFormatIndex: 0, action: 'add', reason: null, state: { duplicateNoteIds: [] } }
+          ]
+        }
+      ]);
+      const noteStates = new NoteStates();
+      const view = render(WordView, {
+        ...baseProps,
+        controller: { addNote, getNoteStates } as never,
+        noteStates
+      });
+      await fireEvent.click(await view.findByRole('button', { name: 'Add to Anki' }));
+
+      await view.rerender({ entries: [other] });
+      finish();
+      await waitFor(() => expect(mocks.syncAnkiWeb).toHaveBeenCalled());
+
+      expect(await view.findByRole('button', { name: 'Add to Anki' })).toBeTruthy();
+      expect(view.queryByRole('img', { name: 'Added to Anki' })).toBeNull();
+      // The saved word is remembered under its own name.
+      const saved = await noteStates.get({ getNoteStates } as never, entry, {}, {});
+      expect(saved?.inAnki).toBe(true);
+    });
   });
 });
