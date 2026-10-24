@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TermDictionaryEntry } from 'yomitan-core';
 import {
   alternateForms,
+  entriesCoveringSpan,
   distributeFurigana,
   primaryHeadword,
   frequencyLabels,
@@ -82,6 +83,39 @@ describe('primaryHeadword and alternateForms', () => {
   it('lists the other readings, then the other spellings, once each', () => {
     expect(alternateForms(merged)).toEqual(['ゆう', '云う', '謂う']);
     expect(alternateForms(entry({ headwords: primaryOnly as never }))).toEqual([]);
+  });
+});
+
+describe('entriesCoveringSpan', () => {
+  const matched = (term: string, originalText: string, isPrimary = true, matchType = 'exact') =>
+    entry({ headwords: [{ term, sources: [{ originalText, isPrimary, matchType }] }] as never });
+  // 言って: 言う covers all three characters, 言 (げん) only the first.
+  const full = matched('言う', '言って');
+  const prefix = matched('言', '言');
+
+  it('drops shorter prefix matches', () => {
+    expect(entriesCoveringSpan([full, prefix], 3)).toEqual([full]);
+  });
+
+  it('needs an exact primary source of the full length', () => {
+    const sequence = matched('云う', '云う', false);
+    const partial = matched('言う', '言って', true, 'prefix');
+    expect(entriesCoveringSpan([sequence, partial, full], 3)).toEqual([full]);
+  });
+
+  it('keeps one entry when any headword of a merged entry covers the span', () => {
+    const merged = entry({
+      headwords: [
+        { term: '云う', sources: [{ originalText: '云う', isPrimary: false, matchType: 'exact' }] },
+        { term: '言う', sources: [{ originalText: '言って', isPrimary: true, matchType: 'exact' }] }
+      ] as never
+    });
+    expect(entriesCoveringSpan([merged, prefix], 3)).toEqual([merged]);
+  });
+
+  it('falls back to every entry when none covers the span', () => {
+    expect(entriesCoveringSpan([prefix], 5)).toEqual([prefix]);
+    expect(entriesCoveringSpan([], 3)).toEqual([]);
   });
 });
 

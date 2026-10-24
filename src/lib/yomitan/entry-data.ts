@@ -71,6 +71,26 @@ export function primaryHeadword(
 }
 
 /**
+ * The entries with an exact primary match over the whole `length` of the span, dropping the
+ * shorter prefix matches a lookup also returns (the rule of yomitan-core's `segment`). Falls back
+ * to all entries when none covers the span, as for a selection that isn't a Word.
+ */
+export function entriesCoveringSpan(
+  entries: TermDictionaryEntry[],
+  length: number
+): TermDictionaryEntry[] {
+  const covering = entries.filter(({ headwords }) =>
+    headwords.some(({ sources }) =>
+      sources.some(
+        ({ matchType, isPrimary, originalText }) =>
+          matchType === 'exact' && isPrimary && originalText.length === length
+      )
+    )
+  );
+  return covering.length > 0 ? covering : entries;
+}
+
+/**
  * The entry's other readings of the primary spelling, then its other spellings, for one small
  * line under the headword (`ゆう · 云う · 謂う`).
  */

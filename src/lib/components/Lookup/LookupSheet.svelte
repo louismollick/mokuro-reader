@@ -8,6 +8,7 @@
   import { createMokuroAnkiTransport } from '$lib/yomitan/anki-transport';
   import { buildBoxText, type BoxText } from '$lib/yomitan/box-text';
   import { showHighlight, tapOffset } from '$lib/yomitan/box-dom';
+  import { entriesCoveringSpan } from '$lib/yomitan/entry-data';
   import { createKanjiInfoLoader } from '$lib/yomitan/kanji-data';
   import type { LookupRequest } from '$lib/yomitan/lookup-request';
   import {
@@ -107,7 +108,8 @@
 
   /**
    * The entries the Word View shows for a text: a merge-mode lookup, so a word with several
-   * readings or spellings is one entry (Segmentation itself is unchanged). Falls back to the
+   * readings or spellings is one entry, without the shorter prefix matches (Segmentation itself
+   * is unchanged). Falls back to the
    * segmentation's own entries if the lookup fails.
    */
   function wordEntries(current: Session, text: string, fallback: TermDictionaryEntry[] = []) {
@@ -115,7 +117,9 @@
     if (!entries) {
       entries = current.client.lookup
         .terms(text, { mode: 'merge' })
-        .then(({ entries: found }) => (found.length > 0 ? found : fallback))
+        .then(({ entries: found }) =>
+          found.length > 0 ? entriesCoveringSpan(found, text.length) : fallback
+        )
         .catch(() => fallback);
       current.merged.set(text, entries);
     }
