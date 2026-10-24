@@ -3,14 +3,18 @@ import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import type { AnkiNoteContext, DisplayController, TermDictionaryEntry } from 'yomitan-core';
 import WordView from '../WordView.svelte';
 import { NoteStates } from '$lib/yomitan/note-states';
+import { MinedPanels } from '$lib/yomitan/mined-panels.svelte';
+import type { PanelSource } from '$lib/yomitan/mining';
 
 const mocks = vi.hoisted(() => ({
   syncAnkiWeb: vi.fn(),
-  showSnackbar: vi.fn()
+  showSnackbar: vi.fn(),
+  cropPanel: vi.fn()
 }));
 
 vi.mock('$lib/anki-connect', () => ({ syncAnkiWeb: mocks.syncAnkiWeb }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: mocks.showSnackbar }));
+vi.mock('$lib/panel/panel-crop', () => ({ cropPanel: mocks.cropPanel }));
 vi.mock('yomitan-core', () => ({
   findGlossImages: () => [],
   setGlossImageSource: () => {},
@@ -75,7 +79,12 @@ const entry = {
 
 const client = {
   profile: {
-    get: () => ({ options: { audio: { sources: [{}], enableDefaultAudioSources: false } } })
+    get: () => ({
+      options: {
+        audio: { sources: [{}], enableDefaultAudioSources: false },
+        anki: { cardFormats: [{ fields: { Picture: { value: '{screenshot}' } } }] }
+      }
+    })
   },
   audio: { urls: vi.fn(async () => [{ url: 'https://audio.test/a.mp3' }]) },
   dictionaries: { getMedia: vi.fn(async () => null) },
@@ -105,6 +114,9 @@ const baseProps = {
   noteContext: {} as AnkiNoteContext,
   extraMarkers: {},
   noteStates: new NoteStates(),
+  panelSource: null as PanelSource | null,
+  minedPanels: new MinedPanels(),
+  onAdjust: vi.fn(),
   onKanji: vi.fn(),
   onQuery: vi.fn()
 };
@@ -206,8 +218,66 @@ describe('WordView', () => {
     await fireEvent.click(on.getByRole('button', { name: 'Add to Anki' }));
 
     await waitFor(() => expect(on.getByRole('img', { name: 'Added to Anki' })).toBeTruthy());
-    expect(addNote).toHaveBeenCalledWith(entry, 0, noteContext, { series: 'S', volume: 'V' });
+    expect(addNote).toHaveBeenCalledWith(
+      entry,
+      0,
+      noteContext,
+      { series: 'S', volume: 'V' },
+      undefined
+    );
     expect(mocks.syncAnkiWeb).toHaveBeenCalled();
+  });
+
+  it('adds the Panel Crop as the note screenshot and offers to adjust it', async () => {
+    const image = new Blob(['crop'], { type: 'image/webp' });
+    mocks.cropPanel.mockResolvedValue({ blob: image, rect: { x1: 1, y1: 2, x2: 30, y2: 40 } });
+    vi.stubGlobal(
+      'URL',
+      Object.assign(URL, { createObjectURL: () => 'blob:crop', revokeObjectURL() {} })
+    );
+    const addNote = vi.fn(async () => ({
+      noteId: 7,
+      overwritten: false,
+      warnings: ['audio failed']
+    }));
+    const getNoteStates = vi.fn(async () => [
+      {
+        entryIndex: 0,
+        cardFormats: [
+          { cardFormatIndex: 0, action: 'add', reason: null, state: { duplicateNoteIds: [] } }
+        ]
+      }
+    ]);
+    const panelSource = {
+      pageImage: new Blob(['page']),
+      textBox: { x1: 10, y1: 10, x2: 20, y2: 20 }
+    };
+    const onAdjust = vi.fn();
+    const view = render(WordView, {
+      ...baseProps,
+      controller: { addNote, getNoteStates } as never,
+      noteStates: new NoteStates(),
+      minedPanels: new MinedPanels(),
+      panelSource,
+      onAdjust
+    });
+    await fireEvent.click(await view.findByRole('button', { name: 'Add to Anki' }));
+
+    await waitFor(() => expect(view.getByRole('img', { name: 'Added to Anki' })).toBeTruthy());
+    expect(mocks.cropPanel).toHaveBeenCalledWith(panelSource.pageImage, panelSource.textBox);
+    expect(addNote).toHaveBeenCalledWith(
+      entry,
+      0,
+      {},
+      {},
+      {
+        screenshot: { data: image, mediaType: 'image/webp' }
+      }
+    );
+    expect(mocks.showSnackbar).toHaveBeenCalledWith('Added note, but audio failed.');
+
+    await fireEvent.click(view.getByRole('button', { name: 'Adjust Panel Crop' }));
+    expect(onAdjust).toHaveBeenCalledWith(entry);
   });
 
   it('shows a duplicate the profile prevents as already in Anki', async () => {

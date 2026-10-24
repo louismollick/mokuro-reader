@@ -1222,14 +1222,20 @@
     // on screen, on one of the pages being shown.
     const shown = $settings.continuousScroll || pageIndex === index || pageIndex === index + 1;
     if (!tap.textBox.isConnected || !shown) return;
-    const lines = pages[pageIndex]?.blocks[blockIndex]?.lines.map(processLine);
+    const ocrPage = pages[pageIndex];
+    const block = ocrPage?.blocks[blockIndex];
+    const lines = block?.lines.map(processLine);
     if (!lines?.some((line) => line.trim())) return;
 
+    // The original page image, not the downscaled render, for the Panel Crop.
+    const pageImage = volumeData?.files?.[ocrPage.img_path];
+    const [x1, y1, x2, y2] = block.box;
     lookupRequest = {
       ...tap,
       id: ++lookupCount,
       lines,
-      boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`
+      boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`,
+      panel: pageImage ? { pageImage, textBox: { x1, y1, x2, y2 } } : null
     };
     if (!LookupSheet) {
       import('$lib/components/Lookup/LookupSheet.svelte').then((module) => {

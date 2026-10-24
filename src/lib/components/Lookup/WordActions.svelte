@@ -5,7 +5,10 @@
   import { syncAnkiWeb } from '$lib/anki-connect';
   import { showSnackbar } from '$lib/util/snackbar';
   import { primaryHeadword } from '$lib/yomitan/entry-data';
+  import type { MinedPanels } from '$lib/yomitan/mined-panels.svelte';
+  import { mineWord, type PanelSource } from '$lib/yomitan/mining';
   import type { NoteStates } from '$lib/yomitan/note-states';
+  import { profileScreenshotFields } from '$lib/yomitan/panel-adjust';
 
   type DisplayController = ReturnType<typeof createDisplayController>;
 
@@ -17,9 +20,21 @@
     noteContext: AnkiNoteContext;
     extraMarkers: Record<string, string>;
     noteStates: NoteStates;
+    /** Where the Panel Crop is cut from; null when the page image isn't available. */
+    panelSource: PanelSource | null;
+    minedPanels: MinedPanels;
   }
 
-  let { client, entry, controller, noteContext, extraMarkers, noteStates }: Props = $props();
+  let {
+    client,
+    entry,
+    controller,
+    noteContext,
+    extraMarkers,
+    noteStates,
+    panelSource,
+    minedPanels
+  }: Props = $props();
 
   let audio = $derived(client.profile.get().options.audio);
   let hasAudio = $derived(audio.sources.length > 0 || audio.enableDefaultAudioSources);
@@ -109,10 +124,23 @@
     const mine = generation;
     ankiState = 'adding';
     try {
-      await controller.addNote(target, ankiTarget?.cardFormatIndex ?? 0, noteContext, extraMarkers);
+      const cardFormatIndex = ankiTarget?.cardFormatIndex ?? 0;
+      // A card format without `{screenshot}` has no use for a Panel Crop.
+      const wantsPanel = profileScreenshotFields(client, cardFormatIndex).length > 0;
+      const { panel, warnings } = await mineWord(
+        controller,
+        target,
+        cardFormatIndex,
+        noteContext,
+        extraMarkers,
+        wantsPanel ? panelSource : null
+      );
       noteStates.markAdded(target);
+      if (panel) minedPanels.set(target, panel);
       void syncAnkiWeb();
-      showSnackbar('Added note to Anki.');
+      showSnackbar(
+        warnings.length > 0 ? `Added note, but ${warnings.join(', ')}.` : 'Added note to Anki.'
+      );
       if (mine === generation) ankiState = 'added';
     } catch (error) {
       if (error instanceof DuplicateNoteError) {

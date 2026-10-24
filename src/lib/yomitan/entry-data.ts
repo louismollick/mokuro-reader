@@ -70,6 +70,12 @@ export function primaryHeadword(
   );
 }
 
+/** Identifies an entry's Word within a Lookup Sheet session (Anki state, Panel Crop). */
+export function headwordKey(entry: TermDictionaryEntry): string {
+  const { term, reading } = primaryHeadword(entry);
+  return `${term}|${reading}`;
+}
+
 /**
  * The entries with an exact primary match over the whole `length` of the span, dropping the
  * shorter prefix matches a lookup also returns (the rule of yomitan-core's `segment`). Falls back

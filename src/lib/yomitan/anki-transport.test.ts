@@ -10,7 +10,8 @@ const mocks = vi.hoisted(() => ({
     findNoteIds: vi.fn(),
     canAddNotesWithErrorDetail: vi.fn(),
     notesInfo: vi.fn(),
-    guiBrowseNotes: vi.fn()
+    guiBrowseNotes: vi.fn(),
+    storeMediaFile: vi.fn()
   }
 }));
 
@@ -129,6 +130,15 @@ describe('createMokuroAnkiTransport', () => {
       createMokuroFetch('http://anki.test:8765')('http://anki.test:8765', request)
     ).rejects.toThrow('Failed to fetch');
     expect(mocks.ankiConnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes media storage through for the Panel Crop and audio', async () => {
+    mocks.base.storeMediaFile.mockResolvedValue('shot.webp');
+    const stored = await createMokuroAnkiTransport().storeMediaFile?.('shot.webp', {
+      data: 'AAAA'
+    });
+    expect(stored).toBe('shot.webp');
+    expect(mocks.base.storeMediaFile).toHaveBeenCalledWith('shot.webp', { data: 'AAAA' });
   });
 
   it('exposes the full capability set on desktop', () => {

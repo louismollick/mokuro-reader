@@ -6,9 +6,12 @@
     Yomitan
   } from 'yomitan-core';
   import { primaryHeadword } from '$lib/yomitan/entry-data';
+  import type { MinedPanels } from '$lib/yomitan/mined-panels.svelte';
+  import type { PanelSource } from '$lib/yomitan/mining';
   import type { NoteStates } from '$lib/yomitan/note-states';
   import Glossary from './Glossary.svelte';
   import Headword from './Headword.svelte';
+  import PanelThumb from './PanelThumb.svelte';
   import WordActions from './WordActions.svelte';
 
   interface Props {
@@ -24,6 +27,10 @@
     noteContext: AnkiNoteContext;
     extraMarkers: Record<string, string>;
     noteStates: NoteStates;
+    panelSource: PanelSource | null;
+    minedPanels: MinedPanels;
+    /** The Panel Crop thumbnail of `entry` was tapped. */
+    onAdjust: (entry: TermDictionaryEntry) => void;
     onKanji: (character: string) => void;
     onQuery: (query: string) => void;
   }
@@ -38,6 +45,9 @@
     noteContext,
     extraMarkers,
     noteStates,
+    panelSource,
+    minedPanels,
+    onAdjust,
     onKanji,
     onQuery
   }: Props = $props();
@@ -52,11 +62,24 @@
 </script>
 
 {#each shown as entry, index (entryKey(entry, index))}
+  {@const mined = minedPanels.get(entry)}
   <section class="entry" class:next={index > 0}>
     <div class="flex items-start justify-between gap-3">
       <Headword {entry} {surface} {compact} {onKanji} />
-      <WordActions {client} {entry} {controller} {noteContext} {extraMarkers} {noteStates} />
+      <WordActions
+        {client}
+        {entry}
+        {controller}
+        {noteContext}
+        {extraMarkers}
+        {noteStates}
+        {panelSource}
+        {minedPanels}
+      />
     </div>
+    {#if mined}
+      <PanelThumb image={mined.image} onAdjust={() => onAdjust(entry)} />
+    {/if}
     {#await client.render.glossaries(entry, { media: 'placeholder' }) then blocks}
       {#each compact ? blocks.slice(0, 1) : blocks as block (block.dictionary)}
         <Glossary {client} {block} style={glossaryStyle} {compact} {onQuery} />

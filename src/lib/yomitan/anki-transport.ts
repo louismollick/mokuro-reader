@@ -6,9 +6,10 @@
  * self-signed setups keep working exactly as they do for mokuro's other Anki features.
  *
  * `addNote` first creates the note's deck, and replaces the note's tags with mokuro's one global
- * tag template (`ankiConnectSettings.tags`, shared with Capture) resolved for the open volume. Capabilities are trimmed for
- * AnkiConnect Android (`isAndroidMode`), which does not implement `canAddNotesWithErrorDetail`,
- * `notesInfo` or `guiBrowseNotes`.
+ * tag template (`ankiConnectSettings.tags`, shared with Capture) resolved for the open volume.
+ * `storeMediaFile` is passed through, so the controller can store the Panel Crop and audio.
+ * Capabilities are trimmed for AnkiConnect Android (`isAndroidMode`), which does not implement
+ * `canAddNotesWithErrorDetail`, `notesInfo` or `guiBrowseNotes`.
  */
 import { get } from 'svelte/store';
 import type { AnkiTransport } from 'yomitan-core';
@@ -107,7 +108,9 @@ export function createMokuroAnkiTransport(volumeMetadata: VolumeMetadata = {}): 
     },
     updateNoteFields: (note) => base.updateNoteFields(note),
     canAddNotes: (notes) => base.canAddNotes(notes),
-    findNoteIds: (notes) => base.findNoteIds(notes)
+    findNoteIds: (notes) => base.findNoteIds(notes),
+    // Lets the display controller store the Panel Crop and audio for `{screenshot}` and `{audio}`.
+    storeMediaFile: (fileName, source) => base.storeMediaFile(fileName, source)
   };
 
   // AnkiConnect Android lacks these actions; leave them out so the display controller degrades the
