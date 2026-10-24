@@ -1,7 +1,7 @@
 import { ALLOWED_RECOMMENDED_DICTIONARY_URLS } from '$lib/yomitan/recommended-dictionaries';
 import type { RequestHandler } from './$types';
 
-const FORWARDED_HEADERS = ['content-type', 'content-length', 'content-disposition', 'etag'];
+const FORWARDED_HEADERS = ['content-type', 'content-disposition', 'etag'];
 
 export const GET: RequestHandler = async ({ url, fetch }) => {
   const targetUrl = url.searchParams.get('url');

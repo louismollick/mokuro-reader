@@ -66,6 +66,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Same-origin API endpoints (the download proxies) stay out of the service worker, like
+  // cross-origin downloads above: large streamed bodies must not depend on the SW staying alive.
+  if (url.origin === self.location.origin && url.pathname.startsWith('/api/')) {
+    return;
+  }
+
   async function respond() {
     // Never intercept Vite dev server module URLs.
     // A stale SW controlling localhost can otherwise cache/serve invalid module responses.
@@ -77,15 +83,6 @@ self.addEventListener('fetch', (event) => {
       url.pathname.startsWith('/src/');
     if (isViteDevModuleRequest) {
       return fetch(event.request);
-    }
-
-    // API endpoints should be network-only to avoid caching large binary responses.
-    if (url.pathname.startsWith('/api/')) {
-      try {
-        return await fetch(event.request);
-      } catch {
-        return new Response('Offline', { status: 503, statusText: 'Service Unavailable' });
-      }
     }
 
     const cache = await caches.open(CACHE);

@@ -768,6 +768,25 @@ describe('the queue under a bunko bearer token', () => {
     expect(init.headers).toEqual({ 'X-Other': '1' });
   });
 
+  it('proxies unauthenticated GETs to approved hosts, and never ones carrying the account header', async () => {
+    const fetchMock = vi.fn(async () => new Response('x', { status: 200 }));
+    const url = 'https://mokuro.moe/manga/S/V.mokuro';
+    await fetchWithQueueAuth(url, {}, CONNECTED, 'none', fetchMock);
+    expect(fetchMock.mock.calls[0][0]).toBe(`/api/html-download?url=${encodeURIComponent(url)}`);
+
+    await fetchWithQueueAuth(
+      url,
+      { headers: { Authorization: 'Bearer t' } },
+      'https://mokuro.moe/queue.json',
+      'webdav',
+      fetchMock
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(url);
+
+    await fetchWithQueueAuth(`${SERVER}/x`, {}, CONNECTED, 'none', fetchMock);
+    expect(fetchMock.mock.calls[2][0]).toBe(`${SERVER}/x`);
+  });
+
   it('a refused re-issue leaves the 401 standing (no retry)', async () => {
     reissue.mockResolvedValue(false);
     const fetchMock = vi.fn(async () => new Response('', { status: 401 }));

@@ -3,7 +3,6 @@ import type { RequestHandler } from './$types';
 
 const FORWARDED_HEADERS = [
   'content-type',
-  'content-length',
   'content-disposition',
   'etag',
   'last-modified',

@@ -181,12 +181,9 @@ async function mirrorAnkiEnabled(client: Yomitan) {
   const apply = (enabled: boolean) => {
     if (enabled === mirrored) return Promise.resolve();
     mirrored = enabled;
-    return queueEdit(
-      () => client,
-      (options) => {
-        options.anki.enable = enabled;
-      }
-    );
+    return queueEdit(client, (options) => {
+      options.anki.enable = enabled;
+    });
   };
 
   await apply(get(settings).ankiConnectSettings.enabled);
@@ -202,15 +199,12 @@ async function mirrorAnkiEnabled(client: Yomitan) {
 async function applyPendingPreferences(client: Yomitan) {
   if (loadDictionaryPreferences().length === 0) return;
   let remaining = null as DictionaryPreference[] | null;
-  await queueEdit(
-    () => client,
-    (options) => {
-      remaining = applyPendingDictionaryPreferences(
-        options.dictionaries,
-        loadDictionaryPreferences()
-      ).pending;
-    }
-  );
+  await queueEdit(client, (options) => {
+    remaining = applyPendingDictionaryPreferences(
+      options.dictionaries,
+      loadDictionaryPreferences()
+    ).pending;
+  });
   // Consumed only once the profile holding the flags is saved.
   if (remaining !== null) saveDictionaryPreferences(remaining);
 }
@@ -219,16 +213,14 @@ async function applyPendingPreferences(client: Yomitan) {
  * Serializes profile edits: each one reads the latest profile, edits it and saves it inside a
  * shared chain, so concurrent edits never overwrite each other.
  */
-export function editProfile(edit: (options: ProfileOptions) => void): Promise<void> {
-  return queueEdit(getYomitan, edit);
+export async function editProfile(edit: (options: ProfileOptions) => void): Promise<void> {
+  // Resolve the client BEFORE queueing: init itself queues edits, so a queued op that waited on
+  // init would deadlock with them.
+  return queueEdit(await getYomitan(), edit);
 }
 
-function queueEdit(
-  getClient: () => Yomitan | Promise<Yomitan>,
-  edit: (options: ProfileOptions) => void
-): Promise<void> {
+function queueEdit(yomitan: Yomitan, edit: (options: ProfileOptions) => void): Promise<void> {
   const run = editQueue.then(async () => {
-    const yomitan = await getClient();
     const profile = yomitan.profile.get();
     edit(profile.options);
     await yomitan.profile.set(profile);

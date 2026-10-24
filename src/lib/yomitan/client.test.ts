@@ -62,6 +62,19 @@ describe('editProfile', () => {
     expect(client.profile.get().options.general.popupTheme).toBe('dark');
   });
 
+  it('settles an edit made before the client finished initializing', async () => {
+    vi.resetModules();
+    const fresh = await import('./client');
+    // No getYomitan() first: init queues its own edits, so this must not wait on them.
+    await expect(
+      Promise.race([
+        fresh.editProfile(() => {}),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 1000))
+      ])
+    ).resolves.toBeUndefined();
+    await fresh.getYomitan();
+  });
+
   it('serializes concurrent edits so both land', async () => {
     await Promise.all([
       editProfile((options: unknown) => {

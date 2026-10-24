@@ -1,5 +1,6 @@
 import { db } from '$lib/catalog/db';
 import { resolveBunkoLink } from '$lib/util/bunko-links';
+import { buildHtmlDownloadProxyUrl } from '$lib/import/download-proxy';
 import { getLayerMeta } from '$lib/catalog/layer-store';
 import { volumesForFoldedSeriesTitle } from '$lib/catalog/volumes-by-series';
 import { isVolumeInstalled } from '$lib/catalog/volume-state';
@@ -585,6 +586,8 @@ function originOf(url: string): string | null {
  * Authorization goes ONLY to the queue's own origin (a manifest may name files
  * anywhere), and a 401 under a bearer token replaces the token once — through
  * the provider's single-flight re-issue — and retries with the fresh header.
+ * A plain GET that carries no Authorization goes through the same-origin download proxy when
+ * its host needs one (CORS); the URL itself stays the original for the caller's identity.
  */
 export async function fetchWithQueueAuth(
   url: string,
@@ -597,7 +600,11 @@ export async function fetchWithQueueAuth(
     ...((init.headers as Record<string, string> | undefined) ?? {})
   };
   if (headers.Authorization && originOf(url) !== originOf(queueUrl)) delete headers.Authorization;
-  const response = await fetchImpl(url, { ...init, headers });
+  const proxiable = !headers.Authorization && (init.method ?? 'GET').toUpperCase() === 'GET';
+  const response = await fetchImpl(proxiable ? buildHtmlDownloadProxyUrl(url) : url, {
+    ...init,
+    headers
+  });
   const sent = headers.Authorization;
   if (response.status !== 401 || auth !== 'webdav' || !bearerOf(sent)) return response;
   const provider = (await activeWebdavProvider()) as {
