@@ -1636,6 +1636,7 @@
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
+        onTextBoxActivate={handleTextBoxActivate}
       />
     {:else}
       <HorizontalScrollReader
@@ -1650,6 +1651,7 @@
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
+        onTextBoxActivate={handleTextBoxActivate}
       />
     {/if}
   {:else}

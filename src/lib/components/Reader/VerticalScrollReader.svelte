@@ -40,6 +40,7 @@
     /** The gap-adjust wheel chord changed the divider gap to this value (px). */
     onGapChange?: (px: number) => void;
     onContextMenu?: (data: any) => void;
+    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
   let {
@@ -52,7 +53,8 @@
     onVolumeNav,
     onOverlayToggle,
     onGapChange,
-    onContextMenu
+    onContextMenu,
+    onTextBoxActivate
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -581,6 +583,7 @@
                   pageIndex={i}
                   forceVisible={missingPagePaths.has(page.img_path)}
                   {onContextMenu}
+                  {onTextBoxActivate}
                 />
               {/if}
             </div>

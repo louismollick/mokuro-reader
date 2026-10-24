@@ -41,6 +41,7 @@
     onGapChange?: (px: number) => void;
     onVisibleCountChange?: (count: number) => void;
     onContextMenu?: (data: any) => void;
+    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
   }
 
   let {
@@ -54,7 +55,8 @@
     onOverlayToggle,
     onGapChange,
     onVisibleCountChange,
-    onContextMenu
+    onContextMenu,
+    onTextBoxActivate
   }: Props = $props();
 
   let outerDiv: HTMLDivElement | undefined = $state();
@@ -608,6 +610,7 @@
                   pageIndex={i}
                   forceVisible={missingPagePaths.has(page.img_path)}
                   {onContextMenu}
+                  {onTextBoxActivate}
                 />
               {/if}
             </div>
