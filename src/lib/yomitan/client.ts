@@ -137,13 +137,7 @@ async function connectEngine(profile: unknown): Promise<Yomitan> {
 function retireOnWorkerFailure(worker: Worker, port: MessagePort, client: Yomitan) {
   const retire = () => {
     if (engineWorker !== worker) return;
-    engineWorker = null;
-    clientPromise = null;
-    stopMirroringAnki?.();
-    stopMirroringAnki = null;
-    void client.dispose().catch(() => {});
-    port.close();
-    worker.terminate();
+    retireEngine(client, port);
     showSnackbar('The dictionary engine stopped. Try again.');
   };
   worker.addEventListener('error', retire);
@@ -151,11 +145,35 @@ function retireOnWorkerFailure(worker: Worker, port: MessagePort, client: Yomita
   port.addEventListener('messageerror', retire);
 }
 
+/** Disposes `client`, stops its worker and forgets both, so the next `getYomitan()` reconnects. */
+function retireEngine(client: Yomitan, port?: MessagePort) {
+  const worker = engineWorker;
+  engineWorker = null;
+  clientPromise = null;
+  stopMirroringAnki?.();
+  stopMirroringAnki = null;
+  void client.dispose().catch(() => {});
+  port?.close();
+  worker?.terminate();
+}
+
 async function createClient(): Promise<Yomitan> {
   const stored = loadStoredProfile();
   const client = await connectEngine(stored);
+  try {
+    await prepareClient(client, stored === undefined);
+  } catch (error) {
+    // A half-set-up client must not keep its worker alive: the next getYomitan() starts over.
+    retireEngine(client);
+    throw error;
+  }
+  void removeLegacyDatabase();
+  return client;
+}
 
-  if (stored === undefined) {
+/** Restores profile defaults, dictionaries and mirrored settings on a freshly connected client. */
+async function prepareClient(client: Yomitan, isNewProfile: boolean) {
+  if (isNewProfile) {
     // The reader has always been dark; the theme is otherwise profile-driven.
     const profile = client.profile.get();
     profile.options.general.popupTheme = 'dark';
@@ -168,9 +186,6 @@ async function createClient(): Promise<Yomitan> {
   // Flags a lost race left pending are applied on the next start.
   await applyPendingPreferences(client);
   await ensureMainDictionary(client);
-
-  void removeLegacyDatabase();
-  return client;
 }
 
 let editQueue: Promise<unknown> = Promise.resolve();

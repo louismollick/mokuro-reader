@@ -130,7 +130,8 @@
     if (anchor.href.startsWith('yomitan://')) {
       const query = new URL(anchor.href).searchParams.get('query');
       if (query) onQuery(query);
-    } else if (anchor.href) {
+    } else if (/^https?:/i.test(anchor.href)) {
+      // Dictionary markup is user-imported: only open web links, never `javascript:` and the like.
       window.open(anchor.href, '_blank', 'noopener');
     }
   }

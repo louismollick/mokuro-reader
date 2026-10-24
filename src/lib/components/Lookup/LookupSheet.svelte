@@ -65,11 +65,10 @@
     history = startHistory(null);
     expanded = false;
 
-    // Read the tap's geometry before anything async: the page could move meanwhile.
-    const box = buildBoxText(next.lines);
-    const offset = tapOffset(next.textBox, box, next.lines, next.x, next.y);
-
     try {
+      // Read the tap's geometry before anything async: the page could move meanwhile.
+      const box = buildBoxText(next.lines);
+      const offset = tapOffset(next.textBox, box, next.lines, next.x, next.y);
       const client = await getYomitan();
       if (id !== generation) return;
       if (!client.profile.get().options.dictionaries.some(({ enabled }) => enabled)) {

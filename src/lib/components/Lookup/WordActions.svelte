@@ -21,7 +21,6 @@
 
   let { client, entry, controller, noteContext, extraMarkers, noteStates }: Props = $props();
 
-  let headword = $derived(primaryHeadword(entry));
   let audio = $derived(client.profile.get().options.audio);
   let hasAudio = $derived(audio.sources.length > 0 || audio.enableDefaultAudioSources);
 
