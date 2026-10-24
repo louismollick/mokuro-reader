@@ -28,12 +28,19 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 - **Per-Volume Analytics** - Character counts and progress tracking for each volume
 - **Series-Level Stats** - Aggregate statistics across entire manga series
 
+### 📈 Progress Tracking
+
+- **Volume Goals** - Set a number of volumes to finish in a year, season, month, day, or custom date range, and track completions against the pace needed to reach it
+- **Per-Volume Deadlines** - Give a volume a finish-by date and see the pages per day (or per week) needed to stay on schedule
+- **Read-Next Ordering** - Order the tracker by deadline, pages remaining, or pages needed per period, so the volume to pick up next is at the front
+
 ### ☁️ Cloud Integration
 
 - **Google Drive Sync** - Full integration with automatic token refresh and reconnection
-- **MEGA Support** - Alternative cloud storage option
+- **MEGA, OneDrive & WebDAV Support** - More cloud options, including self-hosted WebDAV servers
+- **Local Folder Access** - Bulk import/export through a folder on your device (desktop Chromium)
 - **Automatic Progress Sync** - Seamlessly sync read progress and stats across devices
-- **Easy Backup** - Backup your entire library to Google Drive, MEGA, or WebDAV
+- **Easy Backup** - Backup your entire library to any connected provider
 - **Smart Placeholder System** - Backed up volumes appear as downloadable placeholders in your catalog
 - **One-Tap Downloads** - Download cloud volumes directly from your catalog on your other devices
 - **Cross-Device Continuity** - Pick up exactly where you left off on any device
@@ -48,7 +55,10 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 ### 🔧 Power Features
 
 - **Volume Editor** - Edit metadata, reading progress, and cover (with cropping) directly from the catalog
-- **Series Management** - Rename or merge series from the series page
+- **Series Editor** - Rename a series and edit its AniList link, titles and tracking in one modal - open it with the pencil on the series page, or hover a catalog card and press `E` (merging series lives in Catalog settings)
+- **Preferred Series Titles** - Display series in native, romaji, or English titles from their AniList link, set globally in Catalog settings (folder names are never changed)
+- **AniList Progress Tracking** - Opt a linked series in to push read progress, completions and re-reads to your AniList list
+- **Restart Series** - Archive a finished read and send every volume back to the start; the reader offers it when you re-open the first volume
 - **Context Menu for Text Boxes** - Right-click or long-press OCR text boxes for quick copy and Anki card creation
 - **Copy Without Linebreaks** - Copied text automatically strips linebreaks for cleaner pasting
 - **Text Analysis Tools** - Dedicated text pages for both volumes and series for analysis by browser extensions
@@ -90,6 +100,7 @@ https://github.com/Gnathonic/mokuro-reader/assets/39561296/45a214a8-3f69-461c-87
 | `C`                     | Toggle cover display                                   |
 | `Z`                     | Toggle zoom mode                                       |
 | `F`                     | Toggle fullscreen                                      |
+| `E`                     | Open the editor for the hovered catalog card or volume |
 | `Esc`                   | Exit current volume (or exit series if on series page) |
 | `←` / `→`               | Navigate to previous/next page                         |
 | `↑` / `↓`               | Pan view up/down                                       |
@@ -119,7 +130,7 @@ pip install mokuro
 
 ### Cloud Sync Setup
 
-Connect to **Google Drive**, **MEGA**, or **WebDAV** from the Cloud page in settings. All three providers support:
+Connect to **Google Drive**, **MEGA**, **OneDrive**, or **WebDAV** from the Cloud page in settings (a **Local Folder** option is also available on desktop Chromium browsers). All providers support:
 
 - Automatic progress and profile sync across devices
 - Volume backup with one-tap restore on other devices
@@ -183,12 +194,23 @@ npm test
 
 ### Environment Variables
 
-For Google Drive integration, create a `.env` file:
+For Google Drive and/or OneDrive integration, create a `.env` file:
 
 ```env
 VITE_GDRIVE_CLIENT_ID=your_client_id
 VITE_GDRIVE_API_KEY=your_api_key
+VITE_ONEDRIVE_CLIENT_ID=your_azure_app_client_id
+VITE_ANILIST_CLIENT_ID=your_anilist_client_id
 ```
+
+For OneDrive, register an Azure AD app ("common" authority) and add your deploy
+origin as a **Single-page application** redirect URI. When unset, the OneDrive
+option is hidden. MEGA, WebDAV, and Local Folder need no configuration.
+
+For AniList progress tracking, create an API client at
+https://anilist.co/settings/developer whose redirect URL is your deploy origin
+(e.g. `https://reader.mokuro.app/`). When unset, series linking still works but
+the AniList account/tracking controls are hidden.
 
 ## 💬 Community
 

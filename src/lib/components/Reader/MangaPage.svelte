@@ -1,6 +1,9 @@
 <script lang="ts">
   import type { Page } from '$lib/types';
+  import type { EditSession } from '$lib/reader/edit/edit-session.svelte';
   import TextBoxes from './TextBoxes.svelte';
+  import EditOverlay from './Edit/EditOverlay.svelte';
+  import { acquireBlobUrl, releaseBlobUrl } from '$lib/reader/blob-urls';
 
   interface ContextMenuData {
     x: number;
@@ -8,6 +11,8 @@
     lines: string[];
     imgElement: HTMLElement | null;
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
+    pageIndex?: number;
+    blockIndex?: number;
   }
 
   interface Props {
@@ -23,6 +28,8 @@
     onContextMenu?: (data: ContextMenuData) => void;
     /** Callback when a text box is tapped/clicked */
     onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
+    /** Set while the reader is in OCR edit mode: the edit overlay replaces the text boxes. */
+    editSession?: EditSession | null;
   }
 
   let {
@@ -33,32 +40,38 @@
     pageIndex,
     forceVisible = false,
     onContextMenu,
-    onTextBoxActivate
+    onTextBoxActivate,
+    editSession = null
   }: Props = $props();
 
   let url = $state('');
 
-  // Use cached URL if available, otherwise create blob URL
-  $effect(() => {
-    let currentBlobUrl: string | null = null;
+  // Read through deriveds: a prop like `src={indexedFiles[i]}` is re-read
+  // whenever the parent rebuilds that array — an OCR layer swap does, with
+  // the very same File objects — while a derived only notifies when the value
+  // itself changes. So the page keeps its blob URL and decoded image instead
+  // of swapping in an identical one (a visible flash to the reader bg).
+  let cached = $derived(cachedUrl ?? null);
+  let file = $derived(src ?? null);
 
-    if (cachedUrl) {
+  // Use cached URL if available, otherwise the file's shared object URL — the
+  // same URL the preload cache and any earlier mount of this page used, so
+  // the browser paints the image it already decoded (see blob-urls.ts).
+  $effect(() => {
+    const held = cached ? null : file;
+
+    if (cached) {
       // Use pre-decoded cached URL (no cleanup needed, managed by cache)
-      url = `url(${cachedUrl})`;
-    } else if (src) {
-      // Fallback: create new blob URL
-      currentBlobUrl = URL.createObjectURL(src);
-      url = `url(${currentBlobUrl})`;
+      url = `url(${cached})`;
+    } else if (held) {
+      url = `url(${acquireBlobUrl(held)})`;
     } else {
       url = '';
     }
 
     // Cleanup function runs on effect re-run or component unmount
     return () => {
-      // Only revoke if we created it (not from cache)
-      if (currentBlobUrl) {
-        URL.revokeObjectURL(currentBlobUrl);
-      }
+      if (held) releaseBlobUrl(held);
     };
   });
 </script>
@@ -74,13 +87,17 @@
   style:background-position="center"
   class="relative"
 >
-  <TextBoxes
-    {page}
-    src={src ?? undefined}
-    {volumeUuid}
-    {pageIndex}
-    {forceVisible}
-    {onContextMenu}
-    {onTextBoxActivate}
-  />
+  {#if editSession && pageIndex !== undefined}
+    <EditOverlay {page} {pageIndex} session={editSession} />
+  {:else}
+    <TextBoxes
+      {page}
+      src={src ?? undefined}
+      {volumeUuid}
+      {pageIndex}
+      {forceVisible}
+      {onContextMenu}
+      {onTextBoxActivate}
+    />
+  {/if}
 </div>

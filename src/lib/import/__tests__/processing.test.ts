@@ -141,6 +141,32 @@ describe('parseMokuroFile', () => {
 
     await expect(parseMokuroFile(badFile)).rejects.toThrow(/missing required/i);
   });
+
+  it('ignores a legacy series_metadata block (series facts live in series.json now)', async () => {
+    const file = new File(
+      [
+        JSON.stringify({
+          version: '0.2.1',
+          title: 'One Piece',
+          title_uuid: 's',
+          volume: 'Vol 1',
+          volume_uuid: 'v',
+          pages: [],
+          series_metadata: {
+            external_ids: { anilist: 30013 },
+            titles: { english: 'One Piece' },
+            synonyms: [],
+            tag: '[color]',
+            updated_at: '2026-08-16T00:00:00.000Z'
+          }
+        })
+      ],
+      'a.mokuro'
+    );
+    const parsed = await parseMokuroFile(file);
+    expect(parsed.series).toBe('One Piece');
+    expect(Object.keys(parsed)).not.toContain('seriesMetadata');
+  });
 });
 
 describe('matchImagesToPages', () => {
@@ -319,6 +345,29 @@ describe('processVolume', () => {
     expect(result.metadata.volume).toBe('Test Volume 01');
     expect(result.metadata.pageCount).toBe(2);
     expect(result.metadata.chars).toBe(100);
+  });
+
+  it('records the SHA-256 of exactly the mokuro bytes the OCR was parsed from', async () => {
+    const input = createDecompressedVolume();
+    const bytes = new Uint8Array(await input.mokuroFile!.arrayBuffer());
+    const expected = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), (b) =>
+      b.toString(16).padStart(2, '0')
+    ).join('');
+
+    const result = await processVolume(input);
+
+    expect(result.metadata.mokuroSha256).toBe(expected);
+  });
+
+  it('records no hash for an image-only volume', async () => {
+    const result = await processVolume(
+      createDecompressedVolume({
+        mokuroFile: null,
+        basePath: 'My Manga/Volume 01',
+        imageFiles: createImageFiles(['001.jpg'])
+      })
+    );
+    expect(result.metadata.mokuroSha256).toBeUndefined();
   });
 
   it('calculates cumulative character counts', async () => {

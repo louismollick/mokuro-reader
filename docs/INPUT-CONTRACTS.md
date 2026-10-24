@@ -62,6 +62,30 @@ OCR text boxes own their gestures (see `gesture-target.ts`):
   **dismissal** — it must not toggle the overlay
   (`TapDiscriminator.noteTextBoxInteraction`).
 
+### The edit overlay owns its blocks (`.editBlock`, role 'editor')
+
+In OCR edit mode (`EditOverlay.svelte`) every block renders as an
+`.editBlock` with `[data-edit-handle]` resize handles. The overlay
+`setPointerCapture`s its own presses and lets them **bubble** — it never
+stops propagation. The surface's tracker therefore adds an editor press to
+its pointer map like any other, but classifies the role first and **never
+pans, tap-toggles, or zooms from role 'editor' — for any pointer type**
+(unlike `.textBox`, where touch still pans). The release bubbles too, so the
+map drains (a swallowed `pointerup` would leave a phantom pointer behind).
+
+The page background keeps its read-mode gestures, so the user can pan and
+pinch while editing; with the "draw box" tool armed the overlay marks its
+root `[data-edit-draw]`, which classifies as 'editor', and owns the next
+background drag instead.
+
+Pinch still wins everywhere, and bubbling is why: a second pointer makes two
+in the surface's map, so the surface pinches — and the editor **yields**. A
+block/line drag or a draw in flight watches the window for a second
+`pointerdown`, cancels itself, releases its capture, and rolls back whatever
+it had moved (`EditSession.cancelGesture` — a cancel, not an undo, so the
+aborted drag is never left on the redo stack). The press that caused the
+yield never starts a drag or a draw of its own.
+
 ### Pinch always wins
 
 Two pointers upgrade to pinch no matter where they pressed (text box
@@ -81,6 +105,34 @@ phantom entries get misread as pinches (this was a live production bug).
 Every handler that starts motion opens with the gate call matching its
 intent. Never call `finishNow`/`stop`/`stopPan` combinations inline — add
 to the gate if a new intent appears.
+
+### Wheel granularity decides the zoom's shape (#259)
+
+A wheel stream is classified as **fine** (trackpad, precision wheel,
+synthetic pinch) or **notched** by `WheelStreamClassifier` — once per event,
+at the top of each surface's `handleWheel`, shared by the intent check and
+the zoom so the stateful classifier is never asked twice.
+
+- **Fine streams zoom continuously** at the cursor, through the same
+  anchored path a pinch uses. Stepping a ladder on a device that reports
+  every millimetre of travel is what #259 reported: nothing, nothing,
+  nothing, lurch.
+- **Notched streams keep the level ladder** — one notch is one deliberate
+  step, and mouse users are untouched.
+- **A fine ctrl/meta+wheel is a pinch, so it always zooms**, whatever
+  `swapWheelBehavior` says. Chrome and Firefox deliver trackpad pinch as a
+  synthetic ctrl+wheel; only Safari has real pinch events. Without this a
+  Mac user with the swap on has no working pinch at all. A _notched_
+  ctrl+wheel is a genuine keyboard chord and keeps the swap semantics.
+- Classification is **sticky per stream** and only ever upgrades to fine:
+  trackpad momentum reports large round deltas indistinguishable from
+  notches, while a mouse never reports the small ones. Erring toward fine
+  costs a precision-wheel owner a smooth zoom, which is what they wanted;
+  erring the other way is the bug.
+
+Wheel zoom has no release event, so a fine stream settles on an idle
+timeout (`WHEEL_ZOOM_SETTLE_MS`) — that settle is what clamps the paged
+camera into bounds and reports reading progress.
 
 ### Swipe-to-flip is edge-gated (#186)
 
@@ -104,15 +156,23 @@ Zoom settles carry a `SettleReason` (`zoom-controller.ts`): only
 
 ## Per-surface policy matrix
 
-| Policy         | PagedViewport                     | Scroll readers                          |
-| -------------- | --------------------------------- | --------------------------------------- |
-| Capture        | deferred (at drag threshold)      | immediate (at pan press)                |
-| Pan deltas     | incremental → `camera.adjustView` | totals → absolute scroll from baselines |
-| Text-box pan   | suppressed for mouse/pen only     | suppressed for all pointer types        |
-| Pinch survivor | keeps panning                     | ignored until fresh press               |
-| Tap commit     | immediate                         | deferred (300 ms)                       |
-| Swipe-to-flip  | yes (mobile setting, edge-gated)  | no (panning is the scroll)              |
-| Wheel          | zoom or camera glide              | zoom or (native/strip) scroll           |
+| Policy         | PagedViewport                        | Scroll readers                          |
+| -------------- | ------------------------------------ | --------------------------------------- |
+| Capture        | deferred (at drag threshold)         | immediate (at pan press)                |
+| Pan deltas     | incremental → `camera.adjustView`    | totals → absolute scroll from baselines |
+| Text-box pan   | suppressed for mouse/pen only        | suppressed for all pointer types        |
+| Pinch survivor | keeps panning                        | ignored until fresh press               |
+| Tap commit     | immediate                            | deferred (300 ms)                       |
+| Swipe-to-flip  | yes (mobile setting, edge-gated)     | no (panning is the scroll)              |
+| Wheel          | zoom, gap, or camera glide           | zoom, gap, or (native/strip) scroll     |
+| Wheel zoom     | continuous (fine) / ladder (notched) | continuous (fine) / ladder (notched)    |
+
+Ctrl/meta+shift+wheel is the page-gap adjustment chord on every surface
+(paged writes `pagedGap`; scroll readers write `scrollGap` and sync
+`pageDividers`), checked before the zoom intent. Binding rule: wheel combos
+with a native browser meaning keep that meaning tuned for the reader
+(ctrl+wheel zooms, shift+wheel stays a horizontal pan); the gap chord is
+deliberately one no browser binds.
 
 ## Testing
 

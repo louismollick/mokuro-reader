@@ -224,6 +224,29 @@ export function closeVolumeEditor() {
   volumeEditorModalStore.set(undefined);
 }
 
+// Series editor modal - folder rename, AniList link/tag/sidecars, tracking and re-reads.
+// Mirrors the volume editor above: a globally-mounted <SeriesEditorModal /> reads this store.
+type SeriesEditorModal = {
+  open: boolean;
+  /** Raw `series_title` (folder name) — the identity every series flow keys off. */
+  seriesTitle: string;
+  onClose?: () => void;
+};
+
+export const seriesEditorModalStore = writable<SeriesEditorModal | undefined>(undefined);
+
+export function promptSeriesEditor(seriesTitle: string, options?: { onClose?: () => void }) {
+  seriesEditorModalStore.set({
+    open: true,
+    seriesTitle,
+    onClose: options?.onClose
+  });
+}
+
+export function closeSeriesEditor() {
+  seriesEditorModalStore.set(undefined);
+}
+
 // Import preparing modal - shows progress while scanning/analyzing dropped files
 export type ImportPreparingPhase = 'scanning' | 'analyzing' | 'preparing';
 
@@ -266,47 +289,4 @@ export function updateImportPreparing(details: Partial<ImportPreparingModal>) {
  */
 export function closeImportPreparing() {
   importPreparingModalStore.set(undefined);
-}
-
-export type AddLibraryModalParams = {
-  url?: string;
-  name?: string;
-  username?: string;
-  path?: string;
-};
-
-type AddLibraryModal = {
-  open: boolean;
-  editingId?: string;
-  params?: AddLibraryModalParams;
-  onSave?: () => void;
-  onCancel?: () => void;
-};
-
-export const addLibraryModalStore = writable<AddLibraryModal | undefined>(undefined);
-
-export function promptAddLibrary(
-  params?: AddLibraryModalParams,
-  onSave?: () => void,
-  onCancel?: () => void
-) {
-  addLibraryModalStore.set({
-    open: true,
-    params,
-    onSave,
-    onCancel
-  });
-}
-
-export function promptEditLibrary(libraryId: string, onSave?: () => void, onCancel?: () => void) {
-  addLibraryModalStore.set({
-    open: true,
-    editingId: libraryId,
-    onSave,
-    onCancel
-  });
-}
-
-export function closeAddLibraryModal() {
-  addLibraryModalStore.set(undefined);
 }

@@ -5,7 +5,8 @@
     UploadSolid,
     UserSettingsSolid,
     RefreshOutline,
-    ChartLineUpOutline
+    ChartLineUpOutline,
+    CalendarMonthOutline
   } from 'flowbite-svelte-icons';
   import { nav, isOnReader } from '$lib/util/hash-router';
   import Settings from './Settings/Settings.svelte';
@@ -99,6 +100,10 @@
     nav.toReadingSpeed();
   }
 
+  function navigateToProgressTracker() {
+    nav.toProgressTracker();
+  }
+
   async function handleSync() {
     if (isSyncing) return; // Prevent multiple simultaneous syncs
 
@@ -141,13 +146,23 @@
         <span class="text-xl font-semibold dark:text-white">Mokuro</span>
       </button>
     </NavBrand>
-    <div class="flex gap-5 md:order-2">
+    <!-- The tracker made this a five-icon row (six with cloud sync connected),
+         which wraps onto a second line on phone widths at gap-5 — so keep the
+         roomier spacing for sm and up only. -->
+    <div class="flex gap-3 sm:gap-5 md:order-2">
       <button
         onclick={navigateToReadingSpeed}
         class="flex h-6 w-6 items-center justify-center"
         title="Reading Speed Stats"
       >
         <ChartLineUpOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
+      </button>
+      <button
+        onclick={navigateToProgressTracker}
+        class="flex h-6 w-6 items-center justify-center"
+        title="Progress Tracker"
+      >
+        <CalendarMonthOutline class="h-6 w-6 cursor-pointer hover:text-primary-700" />
       </button>
       <button onclick={openSettings} class="flex h-6 w-6 items-center justify-center">
         <UserSettingsSolid class="h-6 w-6 cursor-pointer hover:text-primary-700" />
@@ -187,20 +202,33 @@
         {/if}
       </button>
       {#if isGoogleDrive && providerState.isAuthenticated && tokenMinutesLeft !== null}
-        {#key tokenMinutesLeft}
+        {#if tokenMinutesLeft <= 0 || providerState.needsAttention}
+          <!-- Session expired: one deliberate click reopens the Google account
+               chooser (the click supplies the user activation popup blockers
+               require) and pulls cloud progress right after. -->
           <button
             onclick={handleTokenRefresh}
-            class="flex cursor-pointer items-center justify-center rounded px-2 py-1 font-mono text-xs transition-colors
-              {tokenMinutesLeft > 30
-              ? 'text-green-600 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20'
-              : tokenMinutesLeft > 10
-                ? 'text-yellow-600 hover:bg-yellow-50 hover:text-yellow-700 dark:hover:bg-yellow-900/20'
-                : 'text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20'}"
-            title="Token expires in {tokenMinutesLeft} minutes. Click to refresh now."
+            class="flex cursor-pointer items-center justify-center rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white transition-colors hover:bg-red-700"
+            title="Google Drive session expired — click to reconnect and sync progress."
           >
-            {tokenMinutesLeft}m
+            Reconnect
           </button>
-        {/key}
+        {:else}
+          {#key tokenMinutesLeft}
+            <button
+              onclick={handleTokenRefresh}
+              class="flex cursor-pointer items-center justify-center rounded px-2 py-1 font-mono text-xs transition-colors
+                {tokenMinutesLeft > 30
+                ? 'text-green-600 hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20'
+                : tokenMinutesLeft > 10
+                  ? 'text-yellow-600 hover:bg-yellow-50 hover:text-yellow-700 dark:hover:bg-yellow-900/20'
+                  : 'text-red-600 hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-900/20'}"
+              title="Token expires in {tokenMinutesLeft} minutes. Click to refresh now."
+            >
+              {tokenMinutesLeft}m
+            </button>
+          {/key}
+        {/if}
       {/if}
       {#if hasActiveProvider && !providerState.isReadOnly}
         <button

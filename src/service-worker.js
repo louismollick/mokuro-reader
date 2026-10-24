@@ -44,18 +44,32 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Cross-origin hosts the service worker may still handle: small, fast
+// requests whose responses are worth keeping in the offline cache (the
+// Noto Sans JP webfont registered by src/lib/util/web-fonts.ts).
+const CROSS_ORIGIN_CACHE_ALLOWLIST = ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'];
+
 self.addEventListener('fetch', (event) => {
   // ignore POST requests etc
   if (event.request.method !== 'GET') return;
 
-  async function respond() {
-    const url = new URL(event.request.url);
-    const isSameOrigin = url.origin === self.location.origin;
+  const url = new URL(event.request.url);
 
+  // Never proxy cross-origin requests (external catalogs, Google Drive,
+  // WebDAV, OneDrive, MEGA, ...) through the service worker. Firefox tears
+  // down an idle service worker ~30s after respondWith() settles, which
+  // aborts any large response body still streaming through it and surfaces
+  // as "Error in input stream" / "A ServiceWorker intercepted the request and
+  // encountered an unexpected error" (#177, #261). Not calling respondWith()
+  // lets the browser perform the fetch natively with the SW out of the path.
+  if (url.origin !== self.location.origin && !CROSS_ORIGIN_CACHE_ALLOWLIST.includes(url.origin)) {
+    return;
+  }
+
+  async function respond() {
     // Never intercept Vite dev server module URLs.
     // A stale SW controlling localhost can otherwise cache/serve invalid module responses.
     const isViteDevModuleRequest =
-      url.pathname.startsWith('/node_modules/.vite/') ||
       url.pathname.startsWith('/node_modules/') ||
       url.pathname.startsWith('/@vite/') ||
       url.pathname.startsWith('/@fs/') ||
@@ -63,17 +77,6 @@ self.addEventListener('fetch', (event) => {
       url.pathname.startsWith('/src/');
     if (isViteDevModuleRequest) {
       return fetch(event.request);
-    }
-
-    // Don't apply offline fallback/caching strategy to cross-origin requests.
-    // This avoids rewriting external fetch errors (e.g. GitHub dictionary downloads)
-    // into synthetic 503 Offline responses.
-    if (!isSameOrigin) {
-      try {
-        return await fetch(event.request);
-      } catch {
-        return new Response('Network error', { status: 502, statusText: 'Bad Gateway' });
-      }
     }
 
     // API endpoints should be network-only to avoid caching large binary responses.
@@ -101,15 +104,8 @@ self.addEventListener('fetch', (event) => {
     try {
       const response = await fetch(event.request);
 
-      // Only cache if:
-      // 1. Response is successful (status 200)
-      // 2. It's not a Google Drive API request
-      // 3. It's not a large file (>10MB)
-      // 4. It's not a Vite module request
+      // Only cache successful (status 200) responses smaller than 10MB
       if (response.status === 200) {
-        if (isViteDevModuleRequest) {
-          return response;
-        }
         // Check response size before caching
         const contentLength = response.headers.get('content-length');
         const sizeInMB = contentLength ? parseInt(contentLength) / (1024 * 1024) : 0;

@@ -2,15 +2,18 @@
   import { run } from 'svelte/legacy';
   import type { TransitionConfig } from 'svelte/transition';
 
+  import { get } from 'svelte/store';
   import { currentSeries, currentVolume, currentVolumeData } from '$lib/catalog';
   import PagedViewport from './PagedViewport.svelte';
   import { pagedZoom } from '$lib/reader/paged-zoom';
+  import { spreadContentSize } from '$lib/reader/paged-zoom-layout';
   import { setInstantAnimations } from '$lib/reader/animator';
   import { keyboardShouldIgnore } from '$lib/reader/input/gesture-target';
   import { toggleFullScreen } from '$lib/util/fullscreen';
   import {
     effectiveVolumeSettings,
     imageFilter,
+    preferredTitleLanguage,
     progress,
     settings,
     updateProgress,
@@ -22,6 +25,12 @@
     type ScheduleSettingKey
   } from '$lib/settings';
   import { clamp, fireExstaticEvent, resetScrollPosition } from '$lib/util';
+  import RereadPromptModal from './RereadPromptModal.svelte';
+  import { shouldOfferReread } from '$lib/metadata/reread';
+  import { getSeriesMetadataForTitle } from '$lib/metadata/store';
+  import { getSeriesReadingState } from '$lib/settings/series-data';
+  import { normalizeSeriesKey } from '$lib/metadata/series-key';
+  import { resolveDisplayTitle } from '$lib/metadata/display-title';
   import { Input, Popover, Range, Spinner } from 'flowbite-svelte';
   import MangaPage from './MangaPage.svelte';
   import TextBoxContextMenu from './TextBoxContextMenu.svelte';
@@ -48,12 +57,33 @@
   import SettingsButton from './SettingsButton.svelte';
   import { getCharCount } from '$lib/util/count-chars';
   import QuickActions from './QuickActions.svelte';
+  import EditToolbar from './Edit/EditToolbar.svelte';
+  import { EditSession, type LineRef } from '$lib/reader/edit/edit-session.svelte';
+  import { ORIGINAL_LAYER_ID, hasOriginalLayer } from '$lib/reader/edit/edit-persist';
+  import { miscSettings, updateMiscSetting } from '$lib/settings/misc';
+  import type { Page } from '$lib/types';
+  import {
+    layerSummaries,
+    nextLayerId,
+    primaryLayerName,
+    type LayerSummary
+  } from '$lib/reader/edit/layer-list';
+  import { loadLayerPages, persistLayerPageEdit } from '$lib/reader/edit/layers';
+  import { layerNamePrompt, runLayerAction, type LayerAction } from './Layers/layer-actions';
+  import LayerNameModal from './Layers/LayerNameModal.svelte';
+  import { editModeRequest, setEditModeActive } from '$lib/reader/edit/edit-mode';
+  import {
+    flushOnPageHide,
+    layerUiKeyAction,
+    registerBeforeLayerMutation
+  } from '$lib/reader/edit/reader-edit-rules';
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
   import { onMount, onDestroy } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
+  import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
   import YomitanDrawer from './YomitanDrawer.svelte';
@@ -70,6 +100,48 @@
 
   let volume = $derived($currentVolume);
   let volumeData = $derived($currentVolumeData);
+
+  // Re-read detection: once per opened volume, ask when this is the first LOCAL
+  // volume of a series whose every local volume is completed (see
+  // $lib/metadata/reread.shouldOfferReread). `rereadCheckedFor` guards this to
+  // run once per reader mount for the opened volume, not on every $volumes tick.
+  let rereadPromptOpen = $state(false);
+  /** The quick-actions OCR layer picker is up (bound from QuickActions). */
+  let layerPickerOpen = $state(false);
+  let rereadCheckedFor = $state<string | null>(null);
+  let rereadDisplayTitle = $state('');
+  let localSeriesVolumes = $derived(($currentSeries || []).filter((v) => !v.isPlaceholder));
+
+  $effect(() => {
+    const v = volume;
+    const seriesVolumes = localSeriesVolumes;
+    if (!v || seriesVolumes.length === 0 || rereadCheckedFor === v.volume_uuid) return;
+    rereadCheckedFor = v.volume_uuid;
+    const seriesKey = normalizeSeriesKey(v.series_title);
+    // The record read is for the display title only; the suppression flag comes
+    // from the reading-state store, which is synchronous and therefore always
+    // current (a just-finished restartSeries() has already cleared it).
+    getSeriesMetadataForTitle(v.series_title)
+      .then((meta) => {
+        // The user may have navigated to a different volume while this DB
+        // read was in flight — don't prompt (or set the display title) for a
+        // series that's no longer the one open in the reader.
+        if (volume?.volume_uuid !== v.volume_uuid) return;
+        rereadDisplayTitle = resolveDisplayTitle(v.series_title, meta, get(preferredTitleLanguage));
+        if (
+          shouldOfferReread({
+            volumeUuid: v.volume_uuid,
+            seriesVolumes,
+            volumesData: get(volumes),
+            suppressed: getSeriesReadingState(seriesKey).reread_prompt_suppressed === true,
+            seriesKey
+          })
+        ) {
+          rereadPromptOpen = true;
+        }
+      })
+      .catch((error) => console.warn('[reader] reread check failed:', error));
+  });
 
   // Use store directly for reactivity instead of prop
   let volumeSettings = $derived(
@@ -196,9 +268,58 @@
   }
 
   function handleShortcuts(event: KeyboardEvent & { currentTarget: EventTarget & Window }) {
+    // The re-read prompt modal owns the keyboard while it's open: its buttons
+    // live inside a native <dialog>, and keydowns still bubble past it up to
+    // this window listener, so without this guard Escape would both close the
+    // modal AND fire navigateBack() below, and arrow keys / Space would page
+    // the reader underneath it.
+    if (rereadPromptOpen) {
+      return;
+    }
+    // Same for the OCR layer UI. The picker opens without taking focus from
+    // its toggle button, so `keyboardShouldIgnore` below (which only sees the
+    // event target) does not cover it, and this listener runs BEFORE the
+    // picker's own: Escape would leave the reader instead of closing the
+    // picker, and the arrows would page underneath it.
+    const layerUiKey = layerUiKeyAction(event.code, {
+      pickerOpen: layerPickerOpen,
+      namePromptOpen: $layerNamePrompt !== null
+    });
+    if (layerUiKey !== 'pass') {
+      if (layerUiKey === 'close-picker') layerPickerOpen = false;
+      return;
+    }
     // Ignore shortcuts when the user is typing or inside reader UI overlays
     if (keyboardShouldIgnore(event.target)) {
       return;
+    }
+
+    if (editSession) {
+      const s = editSession;
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (ctrl && event.code === 'KeyZ') {
+        event.preventDefault();
+        if (event.shiftKey) s.redo(editActivePage);
+        else s.undo(editActivePage);
+        return;
+      }
+      if (ctrl && event.code === 'KeyY') {
+        event.preventDefault();
+        s.redo(editActivePage);
+        return;
+      }
+      if ((event.code === 'Delete' || event.code === 'Backspace') && s.selection.length > 0) {
+        event.preventDefault();
+        s.deleteSelected();
+        return;
+      }
+      if (event.code === 'Escape') {
+        event.preventDefault();
+        if (s.tool === 'draw') s.tool = 'select';
+        else if (s.selection.length > 0) s.clearSelection();
+        else void exitEditMode();
+        return;
+      }
     }
 
     const action = event.code || event.key;
@@ -328,6 +449,12 @@
       case 'KeyV':
         toggleContinuousScroll();
         return;
+      case 'KeyE':
+        toggleEditMode();
+        return;
+      case 'KeyL':
+        cycleLayer();
+        return;
       case 'Escape':
         navigateBack();
         return;
@@ -357,7 +484,13 @@
     const onOffsetSpreads = () => offsetSpreads();
     window.addEventListener('offset-spreads', onOffsetSpreads);
 
+    // The debounced save would lose the last edits when the tab is hidden
+    // (mobile browsers may kill it without another event) or unloaded; the
+    // onDestroy flush below never runs for either.
+    const stopFlushOnPageHide = flushOnPageHide(() => void editSession?.flush());
+
     return () => {
+      stopFlushOnPageHide();
       // Stop activity tracker when component unmounts
       activityTracker.stop();
       // Restore overflow when leaving reader
@@ -379,15 +512,12 @@
     const pgs = pages;
     const idx = index;
     if (!pgs || pgs.length === 0 || !pgs[idx]) return { width: 0, height: 0 };
-    const first = pgs[idx];
-    if (showSecondPage() && pgs[idx + 1]) {
-      const second = pgs[idx + 1];
-      return {
-        width: first.img_width + second.img_width,
-        height: Math.max(first.img_height, second.img_height)
-      };
-    }
-    return { width: first.img_width, height: first.img_height };
+    const first = { width: pgs[idx].img_width, height: pgs[idx].img_height };
+    const second =
+      showSecondPage() && pgs[idx + 1]
+        ? { width: pgs[idx + 1].img_width, height: pgs[idx + 1].img_height }
+        : null;
+    return spreadContentSize(first, second, $settings.pagedGap ?? 0);
   });
 
   // Fire reader closed event when component is destroyed (navigating away)
@@ -408,7 +538,75 @@
     }
   });
 
-  let pages = $derived(volumeData?.pages || []);
+  // `pagesRevision` bumps when the OCR editor persists a page, so the array
+  // re-derives from the patched in-memory data (see `onPersisted` below).
+  let pagesRevision = $state(0);
+
+  // ---- OCR layers: which page set the reader shows ----
+  // The per-volume `ocrLayer` setting names an alternate layer; absent (or a
+  // layer this device does not have) means the primary row. Layer pages are
+  // loaded once per (volume, layer) and patched in place by the editor.
+  let displayedLayerId = $derived(
+    (volume && $volumes[volume.volume_uuid]?.settings?.ocrLayer) || null
+  );
+  // $state.raw: deep reactivity would wrap every page in a Proxy, and the
+  // editor hands those objects straight to IndexedDB, which cannot clone a
+  // Proxy (DataCloneError on every layer save). The primary path's pages come
+  // from a plain store value and never had this problem.
+  let layerPages = $state.raw<Page[] | null>(null);
+  /** A layer load is in flight: edit mode waits, so a session never opens
+   * against the primary while the user has asked for a layer. */
+  let layerLoading = $state(false);
+  // Plain variable on purpose: as $state, the write below would re-run this
+  // effect and its cleanup would cancel the load it had just started.
+  let loadedLayerKey: string | null = null;
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const id = displayedLayerId;
+    const key = uuid && id ? `${uuid}:${id}` : null;
+    if (key === loadedLayerKey) return;
+    loadedLayerKey = key;
+    if (!uuid || !id) {
+      layerPages = null;
+      layerLoading = false;
+      return;
+    }
+    let cancelled = false;
+    layerLoading = true;
+    loadLayerPages(uuid, id)
+      .then((p) => {
+        if (cancelled) return;
+        layerPages = p; // null → primary (silent fallback, setting untouched)
+      })
+      .catch(() => {
+        if (!cancelled) layerPages = null;
+      })
+      .finally(() => {
+        if (!cancelled) layerLoading = false;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+  let layersStore = $derived(volume ? layerSummaries(volume.volume_uuid) : null);
+  let layers = $state<LayerSummary[]>([]);
+  $effect(() => {
+    const s = layersStore;
+    if (!s) {
+      layers = [];
+      return;
+    }
+    return s.subscribe((v) => (layers = v));
+  });
+  /** The layer actually on screen (null when the setting names a missing layer). */
+  let activeLayerId = $derived(layerPages ? displayedLayerId : null);
+  /** The pre-edit snapshot is read-only: the user copies it to edit. */
+  let editingBlocked = $derived(activeLayerId === ORIGINAL_LAYER_ID);
+
+  let pages = $derived.by(() => {
+    void pagesRevision;
+    return layerPages ?? volumeData?.pages ?? [];
+  });
   let page = $derived($progress?.[volume?.volume_uuid || 0] || 1);
   let index = $derived(page - 1);
 
@@ -423,6 +621,230 @@
 
   // Track page direction for animations (set in changePage function before page changes)
   let pageDirection = $state<'forward' | 'backward'>('forward');
+
+  // ============================================================
+  // OCR edit mode (paged mode only). The session owns the working pages,
+  // selection, history and the debounced save; the overlay lives in
+  // MangaPage; this component only wires entry/exit, keys and refresh.
+  // ============================================================
+  let editSession = $state<EditSession | null>(null);
+  let editHasOriginal = $state(false);
+
+  function enterEditMode(focus?: LineRef) {
+    if (!volume || !volumeData || $settings.continuousScroll) return;
+    if (editingBlocked) {
+      showSnackbar('The original layer is read-only — pick another layer or create a copy');
+      return;
+    }
+    if (layerLoading) return;
+    if (editSession) {
+      if (focus) {
+        editSession.select(focus.pageIndex, focus.blockIndex);
+        editSession.pendingFocus = focus;
+      }
+      return;
+    }
+    const uuid = volume.volume_uuid;
+    const data = volumeData;
+    // Edit whatever is on screen: an alternate layer's row, or the primary.
+    const layerId = activeLayerId;
+    const layerPagesAtEntry = layerPages;
+    const session = new EditSession({
+      volumeUuid: uuid,
+      layerId,
+      getPage: (i) => (layerPagesAtEntry ?? data.pages)[i],
+      persist: layerId ? (v, i, page) => persistLayerPageEdit(v, layerId, i, page) : undefined,
+      onPersisted: (i, page) => {
+        // Keep the in-memory page set (charDisplay, the next open of this
+        // page) in step with what was written; `pages` re-derives.
+        if (layerPagesAtEntry) layerPagesAtEntry[i] = page;
+        else {
+          data.pages[i] = page;
+          // Every primary save bumps the `volumes` row, which reloads
+          // `volumeData` — so `data` is soon not the object on screen. Patch
+          // the live one too: a "new layer → copy" started from the reader
+          // copies that array, and must see the edits its flush just wrote
+          // even when the reload has not landed yet.
+          const live = volumeData;
+          if (live && live !== data && live.volume_uuid === uuid) live.pages[i] = page;
+        }
+        pagesRevision++;
+        // A closing primary session can still be flushing after a layer
+        // session opened; its snapshot is not that layer's to revert to.
+        if (!layerId && !editSession?.layerId) editHasOriginal = true;
+      }
+    });
+    editSession = session;
+    if (focus) {
+      session.select(focus.pageIndex, focus.blockIndex);
+      session.pendingFocus = focus;
+    }
+    // The only original snapshot is the PRIMARY row's, so Revert is offered on
+    // the primary alone — on an alternate layer it would paste the primary's
+    // page over the layer's. The lookup is async: an answer that lands after
+    // the user swapped layers belongs to a dead session and must not re-enable
+    // the button on the new one.
+    editHasOriginal = false;
+    if (!layerId) {
+      hasOriginalLayer(uuid)
+        .then((v) => {
+          if (editSession === session) editHasOriginal = v;
+        })
+        .catch(() => {
+          if (editSession === session) editHasOriginal = false;
+        });
+    }
+    overlaysVisible = true;
+  }
+
+  // Publish the state for the settings toggle; honour outside requests
+  // (settings toggle, context menu) through the app-level store.
+  $effect(() => {
+    setEditModeActive(!!editSession);
+  });
+  let lastEditRequestSeq = $state(get(editModeRequest).seq);
+  $effect(() => {
+    const req = $editModeRequest;
+    if (req.seq === lastEditRequestSeq) return;
+    lastEditRequestSeq = req.seq;
+    if (req.on) enterEditMode(req.focus);
+    else void exitEditMode();
+  });
+
+  async function exitEditMode() {
+    const s = editSession;
+    if (!s) return;
+    editSession = null;
+    await s.dispose();
+    pagesRevision++;
+  }
+
+  // The page undo/redo/revert act on: the one the user last touched, as long
+  // as it is still on screen (a page turn falls back to the current page).
+  let editActivePage = $derived.by(() => {
+    const active = editSession?.activePageIndex ?? null;
+    if (active === null) return index;
+    if (active === index) return index;
+    if (showSecondPage() && active === index + 1) return active;
+    return index;
+  });
+
+  async function revertCurrentPage() {
+    if (!editSession) return;
+    const ok = await editSession.revertPage(editActivePage);
+    if (!ok) showSnackbar('No original to revert to');
+  }
+
+  function toggleEditMode() {
+    if (editSession) void exitEditMode();
+    else enterEditMode();
+  }
+
+  // ---- layer switching and actions (the picker and the settings panel) ----
+  let primaryName = $derived(primaryLayerName(volume?.mokuro_version));
+
+  function layerDisplayName(layerId: string | null): string {
+    if (layerId === null) return primaryName;
+    return layers.find((l) => l.layer_id === layerId)?.name ?? layerId;
+  }
+
+  /** Switch the displayed layer (picker, hotkey). The announcement comes from
+   * the setting watcher below, so the settings panel's select gets it too. */
+  async function selectLayer(layerId: string | null) {
+    if (!volume) return;
+    // A swap from inside the editor (toolbar strip, L key) keeps the user
+    // editing: the session on the old layer is closed (saving what is pending)
+    // and a new one opens on the new layer once its pages are loaded.
+    const wasEditing = !!editSession;
+    if (editSession) await exitEditMode();
+    reenterEditOnLayer = wasEditing ? { layer: layerId } : null;
+    updateVolumeSetting(volume.volume_uuid, 'ocrLayer', layerId ?? undefined);
+  }
+  let reenterEditOnLayer = $state<{ layer: string | null } | null>(null);
+  $effect(() => {
+    const pending = reenterEditOnLayer;
+    if (!pending || editSession || layerLoading) return;
+    if (activeLayerId !== pending.layer) return;
+    reenterEditOnLayer = null;
+    enterEditMode();
+  });
+
+  // Announce layer switches the same way the other reader shortcuts (T, N,
+  // O…) announce theirs: the in-reader notification, keyed so repeats replace
+  // rather than stack. Watching the SETTING means every switch — picker,
+  // settings-panel select, L hotkey — is announced once, and opening a volume
+  // (first value per volume) is not.
+  let announcedLayerFor: { volume: string; layer: string | null } | null = null;
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const layer = displayedLayerId;
+    if (!uuid) return;
+    if (announcedLayerFor?.volume !== uuid) {
+      announcedLayerFor = { volume: uuid, layer };
+      return;
+    }
+    if (announcedLayerFor.layer === layer) return;
+    announcedLayerFor = { volume: uuid, layer };
+    showNotification(`OCR Layer: ${layerDisplayName(layer)}`, 'ocr-layer');
+  });
+
+  /** `L`: step to the next OCR layer (Primary → layers in order → Primary). */
+  function cycleLayer() {
+    if (!volume) return;
+    if (layers.length === 0) {
+      showSnackbar('No OCR layers for this volume');
+      return;
+    }
+    void selectLayer(nextLayerId(activeLayerId, layers));
+  }
+
+  /**
+   * Settle the open edit session before a layer action reads or replaces DB
+   * rows: the debounced save may not have run yet, so a promote would copy a
+   * layer without its last edits (and the late save would then land on top of
+   * the promoted primary), and a copy would miss them.
+   *
+   * A promote CLOSES the session rather than just flushing it. It swaps the
+   * content under the primary row, so a primary session's working copies are
+   * the old primary from then on — any further save from it would paste an old
+   * page over the new one — and re-entering straight away (as a layer switch
+   * from inside the editor does) would seed the new session from `volumeData`
+   * that has not reloaded yet. The user re-enters with E once it has.
+   */
+  function settleEditsBeforeLayerMutation(action: LayerAction): Promise<void> {
+    if (action === 'promote') return exitEditMode();
+    return editSession?.flush() ?? Promise.resolve();
+  }
+  // The settings panel runs the same layer actions without being a child of
+  // the reader; it reaches the session through this registration.
+  onMount(() => registerBeforeLayerMutation(settleEditsBeforeLayerMutation));
+
+  function runLayerActionFromReader(action: LayerAction, layerId: string | null) {
+    if (!volume) return;
+    const target = layerId ?? activeLayerId;
+    void runLayerAction(action, {
+      volumeUuid: volume.volume_uuid,
+      layerId: target,
+      layerName: layers.find((l) => l.layer_id === target)?.name,
+      layerKind: layers.find((l) => l.layer_id === target)?.kind,
+      displayedPages: pages,
+      onSelectLayer: selectLayer,
+      onBeforeMutate: () => settleEditsBeforeLayerMutation(action)
+    });
+  }
+
+  // Leaving the volume or switching to a scroll mode ends the session
+  // (saving whatever is pending).
+  $effect(() => {
+    const uuid = volume?.volume_uuid;
+    const continuous = $settings.continuousScroll;
+    const layer = activeLayerId;
+    if (
+      editSession &&
+      (continuous || uuid !== editSession.volumeUuid || layer !== editSession.layerId)
+    )
+      void exitEditMode();
+  });
 
   // Custom page intro (new page coming in)
   function pageIn(
@@ -590,6 +1012,11 @@
 
   onDestroy(() => {
     imageCache.cleanup();
+    if (editSession) {
+      const s = editSession;
+      editSession = null;
+      void s.dispose();
+    }
   });
 
   // Window size state for reactive auto-detection
@@ -717,6 +1144,7 @@
     textBox?: [number, number, number, number]; // [xmin, ymin, xmax, ymax] for initial crop
     imageUrl?: string; // Captured at right-click time for reliability
     pageIndex?: number; // Which page the context menu was opened on
+    blockIndex?: number; // Which block — for "Edit this text"
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
@@ -765,6 +1193,12 @@
 
     yomitanSourceText = sourceText;
     showYomitanDrawer = true;
+  }
+
+  function handleContextMenuEditText() {
+    if (!contextMenuData || contextMenuData.blockIndex === undefined) return;
+    const pageIndex = contextMenuData.pageIndex ?? index;
+    enterEditMode({ pageIndex, blockIndex: contextMenuData.blockIndex, lineIndex: 0 });
   }
 
   async function handleContextMenuAddToAnki(selection: string) {
@@ -912,6 +1346,10 @@
       notificationMessage = '';
       notificationKey = '';
     }, 2000);
+  }
+
+  function handleGapChange(px: number) {
+    showNotification(`Page gap: ${px}px`, 'page-gap');
   }
 
   // Shared toggle for the Manual/Scheduled display filters (night, invert,
@@ -1089,8 +1527,41 @@
     page1Number={index + 1}
     page2Number={!useSinglePage ? index + 2 : undefined}
     visible={overlaysVisible}
+    onEdit={toggleEditMode}
+    editEnabled={!$settings.continuousScroll && !editingBlocked && !layerLoading}
+    editBlockedReason={editingBlocked ? 'The original layer is read-only' : undefined}
+    editing={!!editSession}
+    {layers}
+    currentLayer={activeLayerId}
+    primaryLayerName={primaryName}
+    onSelectLayer={selectLayer}
+    onLayerAction={runLayerActionFromReader}
+    bind:layersOpen={layerPickerOpen}
   />
   <SettingsButton visible={overlaysVisible} />
+  {#if editSession}
+    <EditToolbar
+      session={editSession}
+      pageIndex={editActivePage}
+      hasOriginal={editHasOriginal}
+      onExit={exitEditMode}
+      onRevert={revertCurrentPage}
+      {layers}
+      currentLayer={activeLayerId}
+      {primaryName}
+      onSelectLayer={selectLayer}
+      dock={$miscSettings.editToolbarDock}
+      onDockChange={(d) => updateMiscSetting('editToolbarDock', d)}
+    />
+  {/if}
+  <LayerNameModal />
+  <RereadPromptModal
+    bind:open={rereadPromptOpen}
+    seriesTitle={volume.series_title}
+    seriesKey={normalizeSeriesKey(volume.series_title)}
+    seriesVolumes={localSeriesVolumes}
+    displayTitle={rereadDisplayTitle || volume.series_title}
+  />
   <TextBoxPicker />
   {#if overlaysVisible}
     <Popover
@@ -1163,6 +1634,7 @@
         onPageChange={handleContinuousPageChange}
         onVolumeNav={handleContinuousVolumeNav}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {:else}
@@ -1176,6 +1648,7 @@
         onVolumeNav={handleContinuousVolumeNav}
         onVisibleCountChange={(count) => (continuousVisibleCount = count)}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
       />
     {/if}
@@ -1188,6 +1661,7 @@
         rtl={volumeSettings.rightToLeft ?? true}
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
+        onGapChange={handleGapChange}
       >
         <button
           aria-label="Previous page (left edge)"
@@ -1220,6 +1694,7 @@
             <div
               class="col-start-1 row-start-1 flex flex-row"
               class:flex-row-reverse={!volumeSettings.rightToLeft}
+              style:column-gap={`${$settings.pagedGap ?? 0}px`}
               in:pageIn={{ direction: pageDirection }}
               out:pageOut={{ direction: pageDirection }}
             >
@@ -1234,6 +1709,7 @@
                     forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                     onContextMenu={handleTextBoxContextMenu}
                     onTextBoxActivate={handleTextBoxActivate}
+                    {editSession}
                   />
                 {/if}
                 <MangaPage
@@ -1245,6 +1721,7 @@
                   forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
                   onTextBoxActivate={handleTextBoxActivate}
+                  {editSession}
                 />
               {:else}
                 <div class="flex h-screen w-screen items-center justify-center">
@@ -1286,6 +1763,9 @@
       onCopyRaw={() => {}}
       onAddToAnki={handleContextMenuAddToAnki}
       onClose={() => (showContextMenu = false)}
+      onEditText={!$settings.continuousScroll && contextMenuData.blockIndex !== undefined
+        ? handleContextMenuEditText
+        : undefined}
     />
   {/if}
   <YomitanDrawer
@@ -1306,6 +1786,20 @@
   <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">
     <Spinner />
+  </div>
+{:else if volume && needsDownload(volume)}
+  <!-- The row is real (its history is why it is kept) but its pages are not on
+       this device. Reachable by opening an old link or a bookmark; the catalog
+       offers a download instead of opening it. -->
+  <div class="flex h-screen w-screen flex-col items-center justify-center gap-4">
+    <p class="text-lg text-gray-400">This volume is not on this device</p>
+    <p class="text-sm text-gray-500">Download it again from the series page to read it.</p>
+    <button
+      class="rounded bg-primary-600 px-4 py-2 text-white hover:bg-primary-700"
+      onclick={() => navigateBack()}
+    >
+      Go Back
+    </button>
   </div>
 {:else}
   <!-- Volume not found or no data -->

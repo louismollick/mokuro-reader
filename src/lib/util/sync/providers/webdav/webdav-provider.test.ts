@@ -9,7 +9,10 @@ const { mockClient, mockCore, createClientMock } = vi.hoisted(() => {
     createDirectory: vi.fn(),
     deleteFile: vi.fn(),
     moveFile: vi.fn(),
-    getQuota: vi.fn()
+    stat: vi.fn(),
+    getQuota: vi.fn(),
+    getHeaders: vi.fn(() => ({})),
+    setHeaders: vi.fn()
   };
   const mockCore = {
     uploadFile: vi.fn(),
@@ -83,12 +86,51 @@ describe('WebDAVProvider login()', () => {
     // registered (canWriteProgress) => NOT read-only
     expect(provider.isReadOnly).toBe(false);
     expect(provider.getStatus().needsAttention).toBe(false);
-    // checkWritePermissions would have used global fetch - it must not run
-    expect(fetchMock).not.toHaveBeenCalled();
+    // The endpoint answered in bunko's shape: bunko compiles the metadata files.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+    // checkWritePermissions would have used PROPFIND - it must not run. (The
+    // requests allowed are the token request and the OPTIONS asking whether
+    // PUTs are staged and verified.)
+    expect(
+      fetchMock.mock.calls.every(
+        (c) =>
+          c[1]?.method === 'OPTIONS' ||
+          (c[1]?.method === 'POST' && String(c[0]) === 'https://host/login/api/token')
+      )
+    ).toBe(true);
     // credentials persisted as plain strings (C6: format unchanged)
     expect(localStorage.getItem('webdav_server_url')).toBe('https://host');
     expect(localStorage.getItem('webdav_username')).toBe('alice');
     expect(localStorage.getItem('webdav_password')).toBe('pässwörd');
+  });
+
+  it('carries the identity endpoint’s metadata scope through to getStatus()', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'authenticated' as const,
+      username: 'alice',
+      role: 'registered',
+      permissions: {
+        ...REGISTERED_PERMS,
+        metadata: { scope: 'owned' as const, ownedSeries: ['One Piece'] }
+      }
+    });
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toEqual({
+      scope: 'owned',
+      ownedSeries: ['One Piece']
+    });
+  });
+
+  it('leaves getStatus().metadataPermissions undefined when the identity response omits it', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().metadataPermissions).toBeUndefined();
   });
 
   it('throws a typed auth error and does not persist credentials on invalid-credentials', async () => {
@@ -136,6 +178,29 @@ describe('WebDAVProvider login()', () => {
     expect(fetchMock).toHaveBeenCalled();
     // fail-open heuristics => writable
     expect(provider.isReadOnly).toBe(false);
+    // No identity endpoint (or an unreachable one): this client is the producer.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
+  });
+
+  it('a server known to be bunko (verified PUTs recorded) stays a non-producer when identity fails', async () => {
+    // The identity probe hit a flaky hop; this URL answered X-Mokuro-Put: verified before.
+    localStorage.setItem('webdav_put_verified', 'https://host');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host/', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
+  });
+
+  it('the bunko record of ANOTHER server URL does not make this one a non-producer', async () => {
+    localStorage.setItem('webdav_put_verified', 'https://bunko.example');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+
+    expect(provider.getStatus().serverCompilesMetadata).toBe(false);
   });
 
   it('classifies a 401-bearing FOLDER_ERROR on the unsupported path as an auth-typed LOGIN_FAILED', async () => {
@@ -166,6 +231,8 @@ describe('WebDAVProvider login()', () => {
     expect(identityMock).toHaveBeenCalledWith('https://host', undefined, undefined);
     expect(provider.isReadOnly).toBe(true);
     expect(provider.getStatus().needsAttention).toBe(false);
+    // An anonymous answer still proves the endpoint spoke bunko's contract.
+    expect(provider.getStatus().serverCompilesMetadata).toBe(true);
     // no folder creation / write attempts for read-only anonymous sessions
     expect(mockClient.exists).not.toHaveBeenCalled();
     expect(mockClient.createDirectory).not.toHaveBeenCalled();
@@ -186,6 +253,47 @@ describe('WebDAVProvider login()', () => {
 
     expect(identityMock).not.toHaveBeenCalled();
     expect(provider.isAuthenticated()).toBe(false);
+  });
+});
+
+describe('WebDAVProvider getStatus().accountScope', () => {
+  it('is undefined before any connection', async () => {
+    const provider = await freshProvider();
+    expect(provider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('is `webdav:<serverUrl>|<username>` after login', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/|alice');
+  });
+
+  it('omits the username segment for a password-only (no-username) session', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'anonymous' });
+
+    await provider.login({ serverUrl: 'https://host' });
+
+    expect(provider.getStatus().accountScope).toBe('webdav:https://host/');
+  });
+
+  it('strips embedded userinfo from a credentialed URL so no password reaches the persisted scope', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+
+    await provider.login({
+      serverUrl: 'https://sneaky:hunter2@host/dav',
+      username: 'alice',
+      password: 'pw'
+    });
+
+    const scope = provider.getStatus().accountScope;
+    expect(scope).not.toContain('hunter2');
+    expect(scope).not.toContain('sneaky');
+    expect(scope).toBe('webdav:https://host/dav|alice');
   });
 });
 
@@ -375,6 +483,55 @@ describe('WebDAVProvider write-failure policy', () => {
     expect(provider.getStatus().needsAttention).toBe(true);
   });
 
+  it('a 403 on the series COLLECTION delete asks for per-file deletion, without demotion', async () => {
+    // mokuro-bunko: an uploader may delete its own files, never a top-level folder.
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockResolvedValue(true);
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Invalid response: 403 Forbidden'), { status: 403 })
+    );
+
+    await expect(provider.deleteSeriesFolder('Series')).rejects.toMatchObject({
+      code: 'FOLDER_DELETE_REFUSED'
+    });
+    expect(provider.isReadOnly).toBe(false);
+    expect(provider.getStatus().needsAttention).toBe(false);
+  });
+
+  it('reports canAddFiles from identity, and absent for a generic server', async () => {
+    const registered = await loggedInProvider({
+      capabilities: REGISTERED_PERMS,
+      hasPassword: true
+    });
+    expect(registered.getStatus().canAddFiles).toBe(false);
+    expect(registered.isReadOnly).toBe(false); // progress still syncs
+    const generic = await loggedInProvider({ capabilities: null, hasPassword: true });
+    expect(generic.getStatus().canAddFiles).toBeUndefined();
+  });
+
+  it('a 403 on a rename MOVE says the account cannot rename, without demotion', async () => {
+    const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
+    mockClient.exists.mockImplementation(async (path: string) => !path.includes('New'));
+    mockClient.moveFile.mockRejectedValue(new Error('Invalid response: 403 Forbidden'));
+
+    await expect(
+      provider.renameFile(
+        {
+          provider: 'webdav',
+          fileId: '/mokuro-reader/S/Old.cbz',
+          path: 'S/Old.cbz',
+          modifiedTime: '2026-01-01',
+          size: 1
+        },
+        'S/New.cbz'
+      )
+    ).rejects.toMatchObject({
+      code: 'PERMISSION_DENIED',
+      message: "This account can't rename on this server"
+    });
+    expect(provider.isReadOnly).toBe(false);
+  });
+
   it('errors thrown by the policy are ProviderError instances', async () => {
     const provider = await loggedInProvider({ capabilities: REGISTERED_PERMS, hasPassword: true });
     mockCore.uploadFile.mockRejectedValue(new Error('Request failed with status 401'));
@@ -382,5 +539,182 @@ describe('WebDAVProvider write-failure policy', () => {
     await expect(provider.uploadFile('Series/v1.cbz', new Blob(['x']))).rejects.toBeInstanceOf(
       ProviderError
     );
+  });
+});
+
+describe('WebDAVProvider renameFile idempotency & typed NOT_FOUND', () => {
+  async function loggedInProvider(): Promise<WebDAVProvider> {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({
+      kind: 'authenticated',
+      username: 'alice',
+      role: 'registered',
+      permissions: { ...REGISTERED_PERMS }
+    });
+    await provider.login({ serverUrl: 'https://host', username: 'alice', password: 'pw' });
+    return provider;
+  }
+
+  const sourceFile = {
+    provider: 'webdav' as const,
+    fileId: '/mokuro-reader/Old Series/Volume 1.cbz',
+    path: 'Old Series/Volume 1.cbz',
+    modifiedTime: 't',
+    size: 100
+  };
+  const DEST = '/mokuro-reader/New Series/Volume 1.cbz';
+
+  it('treats an occupied destination as OUR prior move only when the source is gone AND sizes match', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(
+      async (path: string) => path !== sourceFile.fileId // dest + folders exist, source gone
+    );
+    mockClient.stat.mockResolvedValue({ size: 100 });
+
+    const result = await provider.renameFile(sourceFile, 'New Series/Volume 1.cbz');
+
+    expect(result.path).toBe('New Series/Volume 1.cbz');
+    expect(mockClient.moveFile).not.toHaveBeenCalled();
+    expect(mockClient.stat).toHaveBeenCalledWith(DEST);
+    // The idempotent-retry branch is a second fabrication site: it must also
+    // carry the ORIGINAL file's real modifiedTime, not the wall clock.
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+  });
+
+  it('throws TARGET_EXISTS when the source is gone but the occupant has a different size', async () => {
+    // A different file at the destination (another volume's backup) must not
+    // be silently adopted — the pre-PR loud conflict is the safe behavior.
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(async (path: string) => path !== sourceFile.fileId);
+    mockClient.stat.mockResolvedValue({ size: 999 });
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'TARGET_EXISTS'
+    });
+  });
+
+  it('throws TARGET_EXISTS on a genuine collision (source still present)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(true); // source AND destination exist
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'TARGET_EXISTS'
+    });
+    expect(mockClient.moveFile).not.toHaveBeenCalled();
+  });
+
+  it('maps a 404 from the MOVE to typed NOT_FOUND (source vanished)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockImplementation(
+      async (path: string) => path.startsWith('/mokuro-reader') && !path.endsWith('.cbz')
+    );
+    mockClient.moveFile.mockRejectedValue(
+      Object.assign(new Error('Request failed with status 404 Not Found'), { status: 404 })
+    );
+
+    await expect(provider.renameFile(sourceFile, 'New Series/Volume 1.cbz')).rejects.toMatchObject({
+      code: 'NOT_FOUND'
+    });
+  });
+
+  it('maps a 404 delete to typed NOT_FOUND so the shared layer can treat it as converged', async () => {
+    const provider = await loggedInProvider();
+    mockClient.deleteFile.mockRejectedValue(
+      Object.assign(new Error('Request failed with status 404 Not Found'), { status: 404 })
+    );
+
+    await expect(provider.deleteFile(sourceFile)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(provider.isReadOnly).toBe(false); // 404 is not a permission signal
+  });
+
+  it('preserves the source file’s real modifiedTime through a normal rename (never fabricates from the client clock)', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false); // no collision anywhere along the path
+    mockClient.moveFile.mockResolvedValue(undefined);
+
+    const result = await provider.renameFile(sourceFile, 'New Series/Volume 1.cbz');
+
+    expect(mockClient.moveFile).toHaveBeenCalled();
+    expect(result.path).toBe('New Series/Volume 1.cbz');
+    // MUST equal the ORIGINAL exactly — not "close to now".
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBeUndefined();
+  });
+
+  it('keeps modifiedTimeProvisional through a rename when the source was only ever a client-clock guess', async () => {
+    const provider = await loggedInProvider();
+    mockClient.exists.mockResolvedValue(false);
+    mockClient.moveFile.mockResolvedValue(undefined);
+    const provisionalSource = { ...sourceFile, modifiedTimeProvisional: true };
+
+    const result = await provider.renameFile(provisionalSource, 'New Series/Volume 1.cbz');
+
+    expect(result.modifiedTime).toBe(sourceFile.modifiedTime);
+    expect(result.modifiedTimeProvisional).toBe(true);
+  });
+});
+
+describe('WebDAVProvider staged, verified PUTs (X-Mokuro-Put)', () => {
+  function optionsAnswer(put: string | null) {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'OPTIONS') {
+        return new Response('', {
+          status: 200,
+          headers: {
+            Allow: 'OPTIONS, GET, PUT, DELETE, MKCOL, PROPFIND',
+            ...(put ? { 'X-Mokuro-Put': put } : {})
+          }
+        });
+      }
+      return new Response('', { status: 404 });
+    });
+  }
+
+  it('records the header from the OPTIONS probe of a mokuro-bunko server', async () => {
+    optionsAnswer('verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue(authenticatedIdentity());
+    await provider.login({ serverUrl: 'https://host/', username: 'alice', password: 'pw' });
+    expect(await provider.getWorkerUploadCredentials()).toMatchObject({
+      webdavPutVerified: true
+    });
+  });
+
+  it('records it from the permissions probe of a generic-path server too', async () => {
+    optionsAnswer('verified');
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+  });
+
+  it('is off for a server that does not send it', async () => {
+    optionsAnswer(null);
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+  });
+
+  it('records it from a PUT response, and forgets it for another server', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+
+    mockCore.uploadFile.mockResolvedValue({ fileId: '/x', serverPutVerified: true });
+    await provider.uploadFile('Series/Vol 1.cbz', new Blob(['x']));
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
+
+    await provider.login({ serverUrl: 'https://other', username: 'u', password: 'pw' });
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(false);
+  });
+
+  it('notePutVerified records it for the connected server (worker-driven uploads)', async () => {
+    const provider = await freshProvider();
+    identityMock.mockResolvedValue({ kind: 'unsupported' });
+    await provider.login({ serverUrl: 'https://host', username: 'u', password: 'pw' });
+    provider.notePutVerified();
+    expect((await provider.getWorkerUploadCredentials()).webdavPutVerified).toBe(true);
   });
 });

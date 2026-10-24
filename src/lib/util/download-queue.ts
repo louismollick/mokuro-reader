@@ -26,12 +26,27 @@ import {
   isImageExtension,
   processVolume,
   saveVolume,
-  deleteVolume as deleteStoredVolume,
+  deleteVolumeCompletely,
   isSystemFile
 } from '$lib/import';
 import type { DecompressedVolume } from '$lib/import';
 import { extractTitlesFromPath, generateDeterministicUUID } from './series-extraction';
 import { shouldReplaceDownloadedVolume } from './download-volume-repair';
+import { hasWritableNonServerProvider } from '$lib/metadata/series-backfill';
+import { scheduleSeriesFileWrite } from '$lib/metadata/series-file-sync';
+import { dropStrandedMetadataOnlyRow } from '$lib/catalog/stranded-rows';
+import { isMetadataOnly, needsDownload } from '$lib/catalog/volume-state';
+import { recordArchiveSize } from '$lib/catalog/archive-size';
+import { splitLayerSidecarName } from './sync/syncable-file';
+import { attachLayerToVolume, readLayerFile } from '$lib/reader/edit/layer-import';
+import { pullLayersForVolume } from '$lib/metadata/layer-sync';
+import {
+  queueSidecarBackfillForVolume,
+  queueSidecarBackfillFromImport
+} from './sync/sidecar-backfill';
+import type { SavedVolumeData } from '$lib/import/database';
+import type { MokuroCloudAttestation } from '$lib/catalog/mokuro-hash';
+import { isoToEpochSeconds } from '$lib/metadata/cloud-sidecar-stamps';
 
 export interface QueueItem {
   volumeUuid: string;
@@ -41,7 +56,6 @@ export interface QueueItem {
   volumeTitle: string;
   volumeMetadata: VolumeMetadata;
   status: 'queued' | 'downloading';
-  libraryId?: string;
 }
 
 interface SeriesQueueStatus {
@@ -54,6 +68,13 @@ interface SeriesQueueStatus {
 interface DecompressedEntry {
   filename: string;
   data: ArrayBuffer;
+  /**
+   * Set on a `.mokuro`/`.mokuro.gz` fetched from the cloud LISTING beside the
+   * archive (`downloadSidecarEntries`), never on an archive entry: where the
+   * file is stored, so the primary installed from it can vouch for the hash
+   * of those bytes (`VolumeMetadata.mokuro_sha256_cloud`).
+   */
+  cloudSidecar?: MokuroCloudAttestation;
 }
 
 function getBaseStem(basePath: string): string {
@@ -119,8 +140,10 @@ export function queueVolume(volume: VolumeMetadata): void {
   const cloudFileId = getCloudFileId(volume);
   const cloudProvider = getCloudProvider(volume);
 
-  if (!volume.isPlaceholder || !cloudFileId || !cloudProvider) {
-    console.warn('Can only queue placeholder volumes with cloud file IDs');
+  // Both flavours of not-installed volume are downloadable: a cloud-only
+  // placeholder, and a metadata-only row whose files were removed here.
+  if (!needsDownload(volume) || !cloudFileId || !cloudProvider) {
+    console.warn('Can only queue not-installed volumes with cloud file IDs');
     return;
   }
 
@@ -143,8 +166,7 @@ export function queueVolume(volume: VolumeMetadata): void {
     seriesTitle: volume.series_title,
     volumeTitle: volume.volume_title,
     volumeMetadata: volume,
-    status: 'queued',
-    libraryId: volume.libraryId
+    status: 'queued'
   };
 
   queueStore.update((q) => [...q, queueItem]);
@@ -159,11 +181,11 @@ export function queueVolume(volume: VolumeMetadata): void {
 export function queueSeriesVolumes(volumes: VolumeMetadata[]): void {
   const placeholders = volumes.filter((v) => {
     const cloudFileId = getCloudFileId(v);
-    return v.isPlaceholder && cloudFileId;
+    return needsDownload(v) && cloudFileId;
   });
 
   if (placeholders.length === 0) {
-    console.warn('No placeholder volumes to queue');
+    console.warn('No downloadable volumes to queue');
     return;
   }
 
@@ -286,24 +308,7 @@ export function getSeriesQueueStatus(seriesTitle: string): SeriesQueueStatus {
  * For MEGA, creates a temporary share link instead of passing credentials
  * Implements rate limiting to prevent API congestion
  */
-async function getProviderCredentials(
-  provider: ProviderType,
-  fileId: string,
-  libraryId?: string
-): Promise<any> {
-  if (libraryId) {
-    const { getLibraryById } = await import('$lib/settings/libraries');
-    const library = getLibraryById(libraryId);
-    if (!library) {
-      throw new Error(`Library not found: ${libraryId}`);
-    }
-    return {
-      webdavUrl: library.serverUrl.replace(/\/$/, ''),
-      webdavUsername: library.username,
-      webdavPassword: library.password
-    };
-  }
-
+async function getProviderCredentials(provider: ProviderType, fileId: string): Promise<any> {
   const activeProvider = unifiedCloudManager.getActiveProvider();
   if (!activeProvider || activeProvider.type !== provider) {
     throw new Error(`Active provider mismatch for download credentials: expected ${provider}`);
@@ -322,9 +327,13 @@ async function entriesToDecompressedVolume(
   basePath: string
 ): Promise<DecompressedVolume> {
   let mokuroFile: File | null = null;
+  let mokuroCloud: MokuroCloudAttestation | undefined;
+  /** The primary so far is the cloud's PLAIN `.mokuro` — which beats its `.gz` twin. */
+  let primaryIsPlainSidecar = false;
   let thumbnailSidecar: File | null = null;
   const imageFiles = new Map<string, File>();
   const nestedArchives: File[] = [];
+  const layerFiles: Array<{ layerId: string; file: File }> = [];
 
   for (const entry of entries) {
     // Skip system files (macOS metadata, etc.)
@@ -335,13 +344,28 @@ async function entriesToDecompressedVolume(
     const normalizedFilename = normalizeFilename(entry.filename);
     const extension = normalizedFilename.toLowerCase().split('.').pop() || '';
 
-    if (normalizedFilename.endsWith('.mokuro')) {
-      // Found mokuro file
-      mokuroFile = new File([entry.data], normalizedFilename, { type: 'application/json' });
-    } else if (normalizedFilename.endsWith('.mokuro.gz')) {
-      const decompressedMokuro = await parseMokuroGzEntry(entry, normalizedFilename);
-      if (decompressedMokuro) {
-        mokuroFile = decompressedMokuro;
+    if (normalizedFilename.endsWith('.mokuro') || normalizedFilename.endsWith('.mokuro.gz')) {
+      const decoded = normalizedFilename.endsWith('.gz')
+        ? await parseMokuroGzEntry(entry, normalizedFilename)
+        : new File([entry.data], normalizedFilename, { type: 'application/json' });
+      if (!decoded) continue;
+      // `<archive stem>.<id>.mokuro` inside the archive is an OCR LAYER of this
+      // volume, never its primary — same archive-presence rule as the cloud
+      // listing (`Vol 1.5.mokuro` in `Vol 1.5.cbz` splits to a stem that is
+      // not the archive's, so it stays the primary).
+      const layer = classifyArchiveMokuroEntry(normalizedFilename, getBaseStem(basePath));
+      if (layer) {
+        layerFiles.push({ layerId: layer.layerId, file: decoded });
+      } else {
+        // The listed sidecars come after the archive's entries, so the cloud's
+        // primary beats a copy embedded in the archive — and the contract's
+        // primary is `<Volume>.mokuro`, else `<Volume>.mokuro.gz`, whatever
+        // order the listing returned them in.
+        const gz = normalizedFilename.endsWith('.gz');
+        if (primaryIsPlainSidecar && gz && entry.cloudSidecar) continue;
+        mokuroFile = decoded;
+        mokuroCloud = entry.cloudSidecar;
+        primaryIsPlainSidecar = !!entry.cloudSidecar && !gz;
       }
     } else if (isThumbnailSidecar(normalizedFilename, basePath)) {
       const mimeType = getImageMimeType(extension);
@@ -371,17 +395,41 @@ async function entriesToDecompressedVolume(
     imageFiles,
     basePath,
     sourceType: 'cloud',
-    nestedArchives
+    nestedArchives,
+    ...(layerFiles.length > 0 ? { layerFiles } : {}),
+    ...(mokuroFile && mokuroCloud ? { mokuroCloud } : {})
   };
+}
+
+/**
+ * Is a `.mokuro` entry of an archive an OCR layer of THAT archive's volume?
+ * Only when it splits as `<archive stem>.<id>`; any other `.mokuro` is the
+ * primary (or a stray the pairing already tolerates). Exported for tests.
+ */
+export function classifyArchiveMokuroEntry(
+  entryName: string,
+  archiveStem: string
+): { layerId: string } | null {
+  const name = entryName.split('/').pop() ?? entryName;
+  const split = splitLayerSidecarName(name);
+  if (!split) return null;
+  return split.stem.toLowerCase() === archiveStem.toLowerCase() ? { layerId: split.layerId } : null;
 }
 
 /**
  * Process downloaded volume data using unified import system
  * Handles missing pages, image-only volumes, and all other import scenarios
  */
-async function processVolumeData(
+
+export async function processVolumeData(
   entries: DecompressedEntry[],
-  placeholder: VolumeMetadata
+  placeholder: VolumeMetadata,
+  /**
+   * Bytes of the archive that actually arrived, as measured by the worker.
+   * Undefined when nothing measured it — the listing's claim is NOT a
+   * substitute: it is what the cloud says about a file, not what we received.
+   */
+  archiveBytes?: number
 ): Promise<void> {
   // Use the original cloud path for basePath to get proper series extraction
   // Falls back to volume_title if cloudPath not available (older placeholders)
@@ -394,7 +442,25 @@ async function processVolumeData(
   // Use unified import system to process the volume
   // This handles missing pages, image-only volumes, placeholder generation, etc.
   const processedVolume = await processVolume(decompressedVolume);
+  // Hash of the bytes installed (`processVolume`) + where the cloud stores them.
+  if (decompressedVolume.mokuroCloud && processedVolume.metadata.mokuroSha256) {
+    processedVolume.metadata.mokuroCloud = decompressedVolume.mokuroCloud;
+  }
 
+  // UUID contract with the catalog placeholder (see `generatePlaceholders`):
+  // the queued placeholder keeps whatever uuid it was shown with, and the
+  // imported volume must land on the same one so progress recorded against the
+  // placeholder (volume-data.json is keyed by uuid) stays attached.
+  //
+  // - OCR volumes: `processVolume` takes the uuid from the archive's `.mokuro`,
+  //   which is the same source the `series.json` index entry was written from,
+  //   so an index-backed placeholder already matches. Without an index the
+  //   placeholder's uuid was derived from the path and the real one replaces it
+  //   — the pre-existing behaviour, and the placeholder disappears because the
+  //   local row now owns that cloud path.
+  // - Image-only volumes: the import mints a uuid from the path, so the
+  //   placeholder's uuid is forced in below.
+  //
   // Keep cloud placeholder series identity for image-only imports so they stay grouped
   // with existing volumes before OCR sidecars are applied.
   const isImageOnly =
@@ -414,6 +480,7 @@ async function processVolumeData(
     db.volume_files.get(processedVolume.metadata.volumeUuid)
   ]);
 
+  let saved: SavedVolumeData | undefined;
   if (
     shouldReplaceDownloadedVolume(
       existingVolume,
@@ -422,12 +489,26 @@ async function processVolumeData(
       processedVolume.metadata.mokuroVersion
     )
   ) {
-    if (existingVolume) {
-      await deleteStoredVolume(processedVolume.metadata.volumeUuid);
+    // A metadata-only row is this volume's history: leave it for `saveVolume`
+    // to fill in place (same uuid, same cover). Any other stale row is replaced
+    // wholesale by the save below, so it can go.
+    if (existingVolume && !isMetadataOnly(existingVolume)) {
+      await deleteVolumeCompletely(processedVolume.metadata.volumeUuid);
     }
 
-    // Save using unified database function
-    await saveVolume(processedVolume);
+    // Save using unified database function. preserveTitles: the titles here
+    // come from the cloud path / legacy .mokuro — sanitizing them would break
+    // the stored-title === cloud-path identity for legacy backups (volume
+    // reads as un-backed-up, renames miss its files). Legacy titles are
+    // sanitized at rename time instead, when the cloud files move with them.
+    saved = await saveVolume(processedVolume, { preserveTitles: true });
+    await dropStrandedMetadataOnlyRow(processedVolume.metadata.volumeUuid);
+
+    // How big the archive we just installed was — inside this branch on
+    // purpose: a download that decided to leave the existing row alone did not
+    // put those bytes on it, so it has no business restamping its size.
+    // `saveVolume` writes the row with a `put`, so this has to come after it.
+    await recordArchiveSize(processedVolume.metadata.volumeUuid, archiveBytes);
   }
 
   // Update cloud file description if folder name doesn't match series title
@@ -471,6 +552,57 @@ async function processVolumeData(
     } catch (error) {
       console.warn('Failed to update cloud file description:', error);
     }
+  }
+
+  // The volume is installed now. If the cloud archive it came from predates
+  // the sidecar convention (mokuro embedded in the .cbz, no cover file), the
+  // data the missing sidecars should carry is IN MEMORY right here — the
+  // DB-shaped pages `saveVolume` just committed and the cover the import
+  // generated — so the import feed uploads them immediately, with no Dexie
+  // re-read, gated on this download's provider still being the active one.
+  // Fire-and-forget by contract: never throws, never delays this import.
+  if (saved && cloudProvider) {
+    queueSidecarBackfillFromImport(saved, cloudProvider);
+  }
+  // Safety net for whatever the import feed declined (provider switched
+  // mid-download, a download that reused the existing install, no provider on
+  // the placeholder): nominate for the deferred drain, which re-derives
+  // everything from the provider cache. A volume the import feed already
+  // handled no-ops here at the attempted-set check — or, across sessions, at
+  // the cache the upload itself updated — without touching the database.
+  queueSidecarBackfillForVolume(processedVolume.metadata.volumeUuid);
+
+  // OCR layers: the ones that travelled INSIDE the archive attach now, and the
+  // ones listed beside it in the cloud (`<title>.<id>.mokuro`, e.g. a bunko
+  // engine's output) are pulled from the listing already in hand — so a fresh
+  // download shows its layers without waiting for a second listing.
+  void installDownloadedLayers(
+    processedVolume.metadata.volumeUuid,
+    decompressedVolume.layerFiles,
+    cloudProvider ?? undefined
+  );
+
+  // The volume is INSTALLED now (freshly saved, or the kept existing install)
+  // and its measured page/char counts are in Dexie — publish them. Without
+  // this, installing never scheduled a `series.json` write at all, so a
+  // published 0/0 no-metadata entry for this volume stood forever: the first
+  // browse-time write ratchets the file into existence with only the shown
+  // volume measured, and after that cover resolution takes the indexed path
+  // (no measurement, no write) while the sidecar backfill sees the stampless
+  // 0/0 entry as never-stale and the installed volume as never-pull — nothing
+  // left to trigger a write (see `maybeScheduleSeriesHealWrite` in
+  // `series-backfill.ts`, this trigger's read-cycle counterpart).
+  //
+  // Scheduled under the FOLDER title (the placeholder's series_title comes
+  // from the cloud path), with no options: no `fromCloudListing` — no listing
+  // was fetched to back this schedule, so the debounced write pays the
+  // ordinary TTL-coalesced refresh — and the 2 s per-series debounce is what
+  // makes a batch install of one series coalesce into ~one PUT instead of one
+  // per volume. Gated so read-only providers and servers that compile
+  // series.json themselves are never written to; the write re-checks its own
+  // gates at fire time.
+  if (hasWritableNonServerProvider()) {
+    scheduleSeriesFileWrite(placeholder.series_title);
   }
 }
 
@@ -556,6 +688,22 @@ function findSidecarFiles(
   return [];
 }
 
+/**
+ * The stored file's identity for a sidecar just downloaded from the listing:
+ * the listing's size when it has one (else the bytes received — the same file),
+ * and its mtime unless the cache entry is a provisional client-clock stamp.
+ */
+function listedSidecarAttestation(
+  provider: string,
+  file: import('./sync/provider-interface').CloudFileMetadata,
+  receivedBytes: number
+): MokuroCloudAttestation | undefined {
+  const size = file.size && file.size > 0 ? file.size : receivedBytes;
+  if (!(size > 0)) return undefined;
+  const modified = file.modifiedTimeProvisional ? undefined : isoToEpochSeconds(file.modifiedTime);
+  return { provider, size, ...(modified !== undefined ? { modified } : {}) };
+}
+
 async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<DecompressedEntry[]> {
   const provider = unifiedCloudManager.getActiveProvider();
   if (!provider) return [];
@@ -573,10 +721,11 @@ async function downloadSidecarEntries(placeholder: VolumeMetadata): Promise<Deco
   for (const sidecar of selected) {
     const blob = await provider.downloadFile(sidecar);
     const data = await blob.arrayBuffer();
-    sidecarEntries.push({
-      filename: sidecar.path.split('/').pop() || sidecar.path,
-      data
-    });
+    const filename = sidecar.path.split('/').pop() || sidecar.path;
+    const cloudSidecar = /\.mokuro(\.gz)?$/i.test(filename)
+      ? listedSidecarAttestation(provider.type, sidecar, data.byteLength)
+      : undefined;
+    sidecarEntries.push({ filename, data, ...(cloudSidecar ? { cloudSidecar } : {}) });
   }
 
   return sidecarEntries;
@@ -631,10 +780,9 @@ async function cleanupProviderDownloadCredentials(
  * - MEGA: Workers download from share link via MEGA API and decompress
  */
 async function processDownload(item: QueueItem, processId: string): Promise<void> {
-  const isLibraryDownload = !!item.libraryId;
-  const provider = isLibraryDownload ? null : unifiedCloudManager.getActiveProvider();
+  const provider = unifiedCloudManager.getActiveProvider();
 
-  if (!isLibraryDownload && !provider) {
+  if (!provider) {
     handleDownloadError(item, processId, `No cloud provider authenticated`);
     return;
   }
@@ -642,9 +790,9 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
   const pool = await getFileProcessingPool();
   const fileSize = getCloudSize(item.volumeMetadata) || 0;
 
-  const providerType = isLibraryDownload ? 'webdav' : provider!.type;
-  const downloadConcurrencyLimit = isLibraryDownload ? 8 : provider!.downloadConcurrencyLimit;
-  const supportsWorkerDownload = isLibraryDownload ? true : provider!.supportsWorkerDownload;
+  const providerType = provider.type;
+  const downloadConcurrencyLimit = provider.downloadConcurrencyLimit;
+  const supportsWorkerDownload = provider.supportsWorkerDownload;
 
   if (supportsWorkerDownload) {
     // Strategy 1: Worker handles download + decompress (Drive, WebDAV, MEGA)
@@ -672,11 +820,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
       // Defer credential fetching until worker is actually ready (prevents race conditions in queue ordering)
       prepareData: async () => {
         // Get provider credentials (for MEGA, this creates a temporary share link)
-        const credentials = await getProviderCredentials(
-          providerType,
-          item.cloudFileId,
-          item.libraryId
-        );
+        const credentials = await getProviderCredentials(providerType, item.cloudFileId);
 
         return {
           mode: 'download-and-decompress',
@@ -708,7 +852,7 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             '[Download Queue] Sidecar entries merged:',
             sidecarEntries.map((entry) => entry.filename)
           );
-          await processVolumeData(allEntries, item.volumeMetadata);
+          await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
 
           progressTrackerStore.updateProcess(processId, {
             progress: 100,
@@ -728,18 +872,14 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
             error instanceof Error ? error.message : 'Unknown error'
           );
         } finally {
-          if (!isLibraryDownload) {
-            await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
-          }
+          await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
           releaseMemory();
           checkAndTerminatePool();
         }
       },
       onError: async (data) => {
         console.error(`Error downloading ${item.volumeTitle}:`, data.error);
-        if (!isLibraryDownload) {
-          await cleanupProviderDownloadCredentials(provider!.type, item.cloudFileId);
-        }
+        await cleanupProviderDownloadCredentials(provider.type, item.cloudFileId);
         handleDownloadError(item, processId, data.error);
         checkAndTerminatePool();
 
@@ -749,7 +889,101 @@ async function processDownload(item: QueueItem, processId: string): Promise<void
     };
 
     pool.addTask(task);
+    return;
   }
+
+  // Strategy 2: Main-thread fetch + worker decompression (e.g. filesystem provider)
+  // Providers that opt out of worker download can't be reached from a worker
+  // context (FileSystemDirectoryHandle is bound to the window). Fetch the blob
+  // on the main thread inside prepareData, then hand it off to the worker's
+  // decompress-only mode — the pool keeps managing memory and concurrency.
+  const memoryRequirement = Math.max(fileSize * 2.8, 50 * 1024 * 1024);
+  const workerMetadata: WorkerVolumeMetadata = {
+    volumeUuid: item.volumeUuid,
+    driveFileId: item.cloudFileId,
+    seriesTitle: item.seriesTitle,
+    volumeTitle: item.volumeTitle,
+    driveModifiedTime: getCloudModifiedTime(item.volumeMetadata) ?? undefined,
+    driveSize: getCloudSize(item.volumeMetadata) ?? undefined
+  };
+
+  const task: WorkerTask = {
+    id: item.cloudFileId,
+    memoryRequirement,
+    provider: `${providerType}:download`,
+    providerConcurrencyLimit: downloadConcurrencyLimit,
+    metadata: workerMetadata,
+    prepareData: async () => {
+      const metadata = unifiedCloudManager.getCloudVolume(item.cloudFileId);
+      if (!metadata) {
+        throw new Error('Cloud file not found in cache');
+      }
+      progressTrackerStore.updateProcess(processId, {
+        progress: 0,
+        status: 'Reading file...'
+      });
+      const blob = await provider.downloadFile(metadata, (loaded, total) => {
+        if (total > 0) {
+          const percent = Math.round((loaded / total) * 90);
+          progressTrackerStore.updateProcess(processId, {
+            progress: percent,
+            status: `Reading file... ${percent}%`
+          });
+        }
+      });
+      progressTrackerStore.updateProcess(processId, {
+        progress: 90,
+        status: 'Extracting files...'
+      });
+      return {
+        mode: 'decompress-only',
+        fileId: item.cloudFileId,
+        fileName: item.volumeTitle + '.cbz',
+        blob,
+        metadata: workerMetadata
+      };
+    },
+    onProgress: () => {
+      // decompress-only emits no progress — status already set from prepareData
+    },
+    onComplete: async (data, releaseMemory) => {
+      try {
+        progressTrackerStore.updateProcess(processId, {
+          progress: 95,
+          status: 'Processing files...'
+        });
+        const sidecarEntries = await downloadSidecarEntries(item.volumeMetadata);
+        const allEntries =
+          sidecarEntries.length > 0 ? [...data.entries, ...sidecarEntries] : data.entries;
+        await processVolumeData(allEntries, item.volumeMetadata, data.archiveSize);
+        progressTrackerStore.updateProcess(processId, {
+          progress: 100,
+          status: 'Download complete'
+        });
+        queueStore.update((q) => q.filter((i) => i.volumeUuid !== item.volumeUuid));
+        setTimeout(() => progressTrackerStore.removeProcess(processId), 3000);
+        processQueue();
+      } catch (error) {
+        console.error(`Failed to process ${item.volumeTitle}:`, error);
+        handleDownloadError(
+          item,
+          processId,
+          error instanceof Error ? error.message : 'Unknown error'
+        );
+      } finally {
+        releaseMemory();
+        checkAndTerminatePool();
+      }
+    },
+    onError: async (data) => {
+      console.error(`Error downloading ${item.volumeTitle}:`, data.error);
+      handleDownloadError(item, processId, data.error);
+      checkAndTerminatePool();
+      processQueue();
+    }
+  };
+
+  pool.addTask(task);
 }
 
 /**
@@ -787,9 +1021,8 @@ async function processQueue(): Promise<void> {
   }
 
   // Get active provider (single-provider architecture)
-  const isLibraryDownload = !!item.libraryId;
   const provider = unifiedCloudManager.getActiveProvider();
-  if (!isLibraryDownload && !provider) {
+  if (!provider) {
     console.error(`[Download Queue] No cloud provider authenticated, skipping ${item.volumeTitle}`);
     return;
   }
@@ -822,3 +1055,27 @@ export const downloadQueue = {
   isVolumeInQueue,
   getSeriesQueueStatus
 };
+
+async function installDownloadedLayers(
+  volumeUuid: string,
+  layerFiles: Array<{ layerId: string; file: File }> | undefined,
+  cloudProvider: ProviderType | undefined
+): Promise<void> {
+  try {
+    for (const entry of layerFiles ?? []) {
+      const read = await readLayerFile(entry.file);
+      // Passive: a layer embedded in the archive must lose to the real sidecar
+      // the pull below (or any later listing) finds, never be pushed over it —
+      // and to a local row with unpushed edits, which the attach leaves alone.
+      if (read) {
+        await attachLayerToVolume(volumeUuid, entry.layerId, read.pages, {
+          passive: true,
+          engine: read.engine
+        });
+      }
+    }
+    if (cloudProvider) await pullLayersForVolume(volumeUuid, cloudProvider);
+  } catch (error) {
+    console.warn('[Download Queue] could not install OCR layers:', error);
+  }
+}
