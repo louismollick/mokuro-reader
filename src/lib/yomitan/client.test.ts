@@ -6,8 +6,9 @@ const state = vi.hoisted(() => ({
   }
 }));
 
-vi.mock('yomitan-core', () => ({
-  createYomitan: async () => ({
+// The engine runs in a worker; the test connects straight to an in-memory client instead.
+vi.mock('@yomitan-core/web', () => ({
+  connectYomitan: async () => ({
     profile: {
       get: () => structuredClone(state.profile),
       set: async (next: typeof state.profile) => {
@@ -21,10 +22,6 @@ vi.mock('yomitan-core', () => ({
     dictionaries: { import: vi.fn(), delete: vi.fn(), update: vi.fn() },
     dispose: async () => {}
   })
-}));
-vi.mock('@yomitan-core/web', () => ({
-  createIndexedDbStorage: () => ({}),
-  createBrowserImageInfoReader: () => ({})
 }));
 const settingsStore = await vi.hoisted(async () => {
   const { writable } = await import('svelte/store');
@@ -44,6 +41,21 @@ import { editProfile, getYomitan } from './client';
 describe('editProfile', () => {
   beforeAll(() => {
     vi.stubGlobal('indexedDB', { databases: async () => [] });
+    vi.stubGlobal(
+      'Worker',
+      class {
+        addEventListener() {}
+        postMessage() {}
+        terminate() {}
+      }
+    );
+    vi.stubGlobal(
+      'MessageChannel',
+      class {
+        port1 = {};
+        port2 = {};
+      }
+    );
   });
 
   it('enables popup Anki actions when the mokuro integration is enabled', async () => {
