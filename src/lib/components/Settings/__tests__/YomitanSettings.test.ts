@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, waitFor } from '@testing-library/svelte';
 import YomitanSettings from '../YomitanSettings.svelte';
-import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
+import { JITEN_MANGA_TITLE, RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
 
 const settingsMocks = vi.hoisted(() => ({
   settingsStore: {
@@ -14,7 +14,12 @@ const settingsMocks = vi.hoisted(() => ({
 }));
 
 const state = vi.hoisted(() => ({
-  profile: { options: { dictionaries: [] as Array<{ name: string; enabled: boolean }> } }
+  profile: {
+    options: {
+      dictionaries: [] as Array<{ name: string; enabled: boolean }>,
+      general: { sortFrequencyDictionary: null as string | null }
+    }
+  }
 }));
 
 const clientMock = vi.hoisted(() => ({
@@ -60,7 +65,8 @@ describe('YomitanSettings', () => {
         dictionaries: [
           { name: 'JMdict', enabled: true },
           { name: 'KANJIDIC', enabled: true }
-        ]
+        ],
+        general: { sortFrequencyDictionary: null }
       }
     };
     clientMock.profile.get.mockImplementation(() => structuredClone(state.profile));
@@ -133,16 +139,44 @@ describe('YomitanSettings', () => {
       { name: 'Jitendex', downloadUrl: RECOMMENDED_DICTIONARIES[0] },
       { name: 'Unrelated', downloadUrl: 'https://example.com/other.zip' }
     ]);
-    clientMock.dictionaries.list.mockResolvedValue([{ title: 'Jitendex' }]);
+    // Jitendex is installed up front; Jiten (Manga) is there once the imports are done.
+    clientMock.dictionaries.list
+      .mockResolvedValueOnce([{ title: 'Jitendex' }])
+      .mockResolvedValue([{ title: 'Jitendex' }, { title: JITEN_MANGA_TITLE }]);
 
     const { getByText } = render(YomitanSettings);
     await waitFor(() => expect(getByText('JMdict')).toBeTruthy());
 
     await fireEvent.click(getByText('Install recommended dictionaries'));
 
-    await waitFor(() => expect(clientMock.dictionaries.import).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(clientMock.dictionaries.import).toHaveBeenCalledTimes(
+        RECOMMENDED_DICTIONARIES.length - 1
+      )
+    );
     const urls = clientMock.dictionaries.import.mock.calls.map(([options]) => options.source.url);
-    // Jitendex is already installed; the other three (listed or not) import from their URLs.
+    // Jitendex is already installed; the rest (listed or not) import from their URLs.
     expect(urls).toEqual(RECOMMENDED_DICTIONARIES.slice(1));
+    // Jiten (Manga) is the first frequency dictionary and becomes the sort frequency source.
+    expect(urls.indexOf(RECOMMENDED_DICTIONARIES[2])).toBeLessThan(
+      urls.findIndex((url) => url.includes('JPDB_v2.2_Frequency'))
+    );
+    await waitFor(() =>
+      expect(state.profile.options.general.sortFrequencyDictionary).toBe(JITEN_MANGA_TITLE)
+    );
+  });
+
+  it('keeps a frequency dictionary the user already chose', async () => {
+    state.profile.options.general.sortFrequencyDictionary = 'JPDBv2㋕';
+    clientMock.dictionaries.list.mockResolvedValue([{ title: JITEN_MANGA_TITLE }]);
+
+    const { getByText } = render(YomitanSettings);
+    await waitFor(() => expect(getByText('JMdict')).toBeTruthy());
+
+    await fireEvent.click(getByText('Install recommended dictionaries'));
+
+    // The profile edit runs after the last import.
+    await waitFor(() => expect(clientMock.profile.set).toHaveBeenCalled());
+    expect(state.profile.options.general.sortFrequencyDictionary).toBe('JPDBv2㋕');
   });
 });

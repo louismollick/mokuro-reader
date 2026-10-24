@@ -7,7 +7,11 @@
   import { progressTrackerStore } from '$lib/util/progress-tracker';
   import { promptConfirmation } from '$lib/util';
   import { editProfile, getYomitan } from '$lib/yomitan/client';
-  import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
+  import {
+    JITEN_MANGA_TITLE,
+    RECOMMENDED_DICTIONARIES,
+    RECOMMENDED_DICTIONARY_TITLES
+  } from '$lib/yomitan/recommended-dictionaries';
 
   /** Installed dictionaries in profile order: this is what lookups search, in this priority. */
   let dictionaries = $state<DictionaryOptions[]>([]);
@@ -149,8 +153,8 @@
   }
 
   /**
-   * mokuro's four recommended dictionaries, resolved against Yomitan's recommended list. One that
-   * the list doesn't carry is imported from its URL directly.
+   * mokuro's recommended dictionaries, resolved against Yomitan's recommended list. One that the
+   * list doesn't carry is imported from its URL directly under its known index title.
    */
   async function resolveRecommended(client: Yomitan) {
     const listed = await client.dictionaries.recommended('ja').catch(() => []);
@@ -158,7 +162,10 @@
       const match = listed.find((item) => item.downloadUrl === url);
       return {
         url,
-        name: match?.name ?? decodeURIComponent(url.split('/').pop() ?? url).replace(/\.zip$/, '')
+        name:
+          match?.name ??
+          RECOMMENDED_DICTIONARY_TITLES[url] ??
+          decodeURIComponent(url.split('/').pop() ?? url).replace(/\.zip$/, '')
       };
     });
   }
@@ -202,6 +209,14 @@
         progressTrackerStore.updateProcess(processId, {
           progress: ((i + 1) / recommended.length) * 100,
           status: `${i + 1} / ${recommended.length}`
+        });
+      }
+
+      // Jiten (Manga) is the default frequency source; don't override a user's own choice.
+      const titles = (await client.dictionaries.list()).map((item) => item.title);
+      if (titles.includes(JITEN_MANGA_TITLE)) {
+        await editProfile((options) => {
+          options.general.sortFrequencyDictionary ??= JITEN_MANGA_TITLE;
         });
       }
     } catch (error) {
