@@ -39,6 +39,7 @@ Mokuro Reader is a web-based manga reader for [mokuro](https://github.com/kha-wh
 - **Dexie**: IndexedDB wrapper for storing volumes and files
 - **@zip.js/zip.js**: ZIP file extraction
 - **Zoom architecture**: Shared ZoomController + measurement-based correction drives zoom in all reader modes (`src/lib/reader/zoom-*.ts`, `paged-*.ts`)
+- **yomitan-core**: dictionary lookups, run in a Web Worker (`src/lib/yomitan/engine.worker.ts`, connected by `client.ts`). Tap a Text Box and the **Lookup Sheet** (`src/lib/components/Lookup/`, loaded on first use) shows the Word View and Kanji View; vocabulary in `CONTEXT.md`
 - **Flowbite Svelte**: UI component library
 - **Tailwind CSS**: Styling
 - **Vitest**: Testing framework

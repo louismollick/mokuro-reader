@@ -80,14 +80,16 @@
   import VerticalScrollReader from './VerticalScrollReader.svelte';
   import HorizontalScrollReader from './HorizontalScrollReader.svelte';
   import { nav, navigateBack } from '$lib/util/hash-router';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { activityTracker } from '$lib/util/activity-tracker';
   import { shouldShowSinglePage } from '$lib/reader/page-mode-detection';
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
-  import YomitanDrawer from './YomitanDrawer.svelte';
-  import { joinTextBoxLines } from '$lib/yomitan/text';
+  import type LookupSheetComponent from '$lib/components/Lookup/LookupSheet.svelte';
+  import type { LookupRequest } from '$lib/yomitan/lookup-request';
+  import type { TextBoxTap } from '$lib/reader/input/text-box-tap';
+  import { processLine } from '$lib/reader/line-coords-layout';
   import '$lib/styles/page-transitions.css';
 
   // TODO: Refactor this whole mess
@@ -150,6 +152,13 @@
 
   let start: Date;
 
+  // The edge buttons: with a Lookup Sheet open, the tap only closes it.
+  function edgeLeft(e: MouseEvent) {
+    if (!dismissLookup()) left(e);
+  }
+  function edgeRight(e: MouseEvent) {
+    if (!dismissLookup()) right(e);
+  }
   function mouseDown() {
     start = new Date();
   }
@@ -468,7 +477,12 @@
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
 
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
-    if ($settings.defaultFullscreen && !document.fullscreenElement) {
+    // (iOS Safari has no element fullscreen API.)
+    if (
+      $settings.defaultFullscreen &&
+      !document.fullscreenElement &&
+      document.documentElement.requestFullscreen
+    ) {
       document.documentElement.requestFullscreen().catch((err) => {
         console.error('Failed to enter fullscreen:', err);
       });
@@ -1148,8 +1162,19 @@
   }
   let showContextMenu = $state(false);
   let contextMenuData = $state<ContextMenuData | null>(null);
-  let showYomitanDrawer = $state(false);
-  let yomitanSourceText = $state('');
+  // Lookup Sheet: loaded on the first Tap Lookup so the Yomitan client stays out of the reader chunk.
+  let LookupSheet = $state.raw<typeof LookupSheetComponent | null>(null);
+  let lookupRequest = $state.raw<LookupRequest | null>(null);
+  let lookupCount = 0;
+
+  // A page turn closes the sheet; in continuous scroll `page` follows the scroll, so it stays.
+  $effect(() => {
+    void page;
+    // Untracked: the settings store emits on unrelated changes and must not close the sheet.
+    untrack(() => {
+      if (!$settings.continuousScroll) lookupRequest = null;
+    });
+  });
 
   // Extract image URL from an element by traversing up to find background-image
   function extractImageUrlFromElement(element: HTMLElement | null): string | null {
@@ -1185,14 +1210,39 @@
     showContextMenu = true;
   }
 
-  function handleTextBoxActivate(data: { lines: string[]; text: string; blockIndex: number }) {
-    if (!$settings.yomitanPopupOnTextBoxTap) return;
+  /** Tap Lookup: finds the tapped Text Box's lines and opens the Lookup Sheet on them. */
+  function handleTextBoxTap(tap: TextBoxTap) {
+    if (!$settings.yomitanPopupOnTextBoxTap || !volume) return;
 
-    const sourceText = joinTextBoxLines(data.lines);
-    if (!sourceText) return;
+    const pageIndex = Number(
+      tap.textBox.closest<HTMLElement>('[data-page-index]')?.dataset.pageIndex
+    );
+    const blockIndex = Number(tap.textBox.dataset.blockIndex);
+    // A held lookup (Capture double-tap on) may land after a page turn: the box must still be
+    // on screen, on one of the pages being shown.
+    const shown = $settings.continuousScroll || pageIndex === index || pageIndex === index + 1;
+    if (!tap.textBox.isConnected || !shown) return;
+    const lines = pages[pageIndex]?.blocks[blockIndex]?.lines.map(processLine);
+    if (!lines?.some((line) => line.trim())) return;
 
-    yomitanSourceText = sourceText;
-    showYomitanDrawer = true;
+    lookupRequest = {
+      ...tap,
+      id: ++lookupCount,
+      lines,
+      boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`
+    };
+    if (!LookupSheet) {
+      import('$lib/components/Lookup/LookupSheet.svelte').then((module) => {
+        LookupSheet = module.default;
+      });
+    }
+  }
+
+  /** A tap on the bare page closes an open sheet (and does nothing else). */
+  function dismissLookup(): boolean {
+    if (!lookupRequest) return false;
+    lookupRequest = null;
+    return true;
   }
 
   function handleContextMenuEditText() {
@@ -1636,7 +1686,8 @@
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
-        onTextBoxActivate={handleTextBoxActivate}
+        onTextBoxTap={handleTextBoxTap}
+        onDismissLookup={dismissLookup}
       />
     {:else}
       <HorizontalScrollReader
@@ -1651,7 +1702,8 @@
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
         onContextMenu={handleTextBoxContextMenu}
-        onTextBoxActivate={handleTextBoxActivate}
+        onTextBoxTap={handleTextBoxTap}
+        onDismissLookup={dismissLookup}
       />
     {/if}
   {:else}
@@ -1664,32 +1716,34 @@
         onPageFlip={(side) => (side === 'left' ? left(null, true) : right(null, true))}
         onOverlayToggle={() => (overlaysVisible = !overlaysVisible)}
         onGapChange={handleGapChange}
+        onTextBoxTap={handleTextBoxTap}
+        onDismissLookup={dismissLookup}
       >
         <button
           aria-label="Previous page (left edge)"
           class="fixed -left-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
           style:margin-left={`${$settings.edgeButtonWidth}px`}
           onmousedown={mouseDown}
-          onmouseup={left}
+          onmouseup={edgeLeft}
         ></button>
         <button
           aria-label="Next page (right edge)"
           class="fixed -right-full z-10 h-full w-full opacity-[0.01] hover:bg-slate-400"
           style:margin-right={`${$settings.edgeButtonWidth}px`}
           onmousedown={mouseDown}
-          onmouseup={right}
+          onmouseup={edgeRight}
         ></button>
         <button
           aria-label="Previous page (bottom left)"
           class="fixed top-full -left-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
           onmousedown={mouseDown}
-          onmouseup={left}
+          onmouseup={edgeLeft}
         ></button>
         <button
           aria-label="Next page (bottom right)"
           class="fixed top-full -right-full z-10 h-screen w-[150%] opacity-[0.01] hover:bg-slate-400"
           onmousedown={mouseDown}
-          onmouseup={right}
+          onmouseup={edgeRight}
         ></button>
         <div class="grid" style:filter={$imageFilter} id="manga-panel">
           {#key page}
@@ -1710,7 +1764,6 @@
                     pageIndex={index + 1}
                     forceVisible={missingPagePaths.has(pages[index + 1]?.img_path)}
                     onContextMenu={handleTextBoxContextMenu}
-                    onTextBoxActivate={handleTextBoxActivate}
                     {editSession}
                   />
                 {/if}
@@ -1722,7 +1775,6 @@
                   pageIndex={index}
                   forceVisible={missingPagePaths.has(pages[index]?.img_path)}
                   onContextMenu={handleTextBoxContextMenu}
-                  onTextBoxActivate={handleTextBoxActivate}
                   {editSession}
                 />
               {:else}
@@ -1740,14 +1792,14 @@
       <button
         aria-label="Previous page (left edge)"
         onmousedown={mouseDown}
-        onmouseup={left}
+        onmouseup={edgeLeft}
         class="absolute top-0 left-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
       <button
         aria-label="Next page (right edge)"
         onmousedown={mouseDown}
-        onmouseup={right}
+        onmouseup={edgeRight}
         class="absolute top-0 right-0 h-full w-16 opacity-[0.01] hover:bg-slate-400"
         style:width={`${$settings.edgeButtonWidth}px`}
       ></button>
@@ -1770,20 +1822,19 @@
         : undefined}
     />
   {/if}
-  <YomitanDrawer
-    bind:open={showYomitanDrawer}
-    sourceText={yomitanSourceText}
-    ankiEnabled={$settings.ankiConnectSettings.enabled}
-    volumeMetadata={volume
-      ? {
-          seriesTitle: volume.series_title,
-          volumeTitle: volume.volume_title
-        }
-      : undefined}
-    onClose={() => {
-      showYomitanDrawer = false;
-    }}
-  />
+  {#if LookupSheet}
+    <LookupSheet
+      request={lookupRequest}
+      ankiEnabled={$settings.ankiConnectSettings.enabled}
+      volumeMetadata={volume
+        ? {
+            seriesTitle: volume.series_title,
+            volumeTitle: volume.volume_title
+          }
+        : undefined}
+      onClose={() => (lookupRequest = null)}
+    />
+  {/if}
 {:else if volume === null}
   <!-- Still loading from IndexedDB -->
   <div class="fixed top-1/2 left-1/2 z-50">

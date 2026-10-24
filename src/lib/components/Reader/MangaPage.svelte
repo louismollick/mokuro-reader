@@ -26,8 +26,6 @@
     forceVisible?: boolean;
     /** Callback when context menu should be shown */
     onContextMenu?: (data: ContextMenuData) => void;
-    /** Callback when a text box is tapped/clicked */
-    onTextBoxActivate?: (data: { lines: string[]; text: string; blockIndex: number }) => void;
     /** Set while the reader is in OCR edit mode: the edit overlay replaces the text boxes. */
     editSession?: EditSession | null;
   }
@@ -40,7 +38,6 @@
     pageIndex,
     forceVisible = false,
     onContextMenu,
-    onTextBoxActivate,
     editSession = null
   }: Props = $props();
 
@@ -97,7 +94,6 @@
       {pageIndex}
       {forceVisible}
       {onContextMenu}
-      {onTextBoxActivate}
     />
   {/if}
 </div>

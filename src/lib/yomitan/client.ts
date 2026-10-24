@@ -1,11 +1,12 @@
 /**
- * The yomitan-core client singleton: lazy, browser-only. Dictionaries live in IndexedDB
- * (`mokuro-reader-yomitan-v2`); the profile (dictionary order and flags, Anki card format, theme)
- * is persisted to localStorage after every change and restored on startup.
+ * The yomitan-core client singleton: lazy, browser-only. The engine itself runs in a Web Worker
+ * (`engine.worker.ts`) and this is its connected client. Dictionaries live in IndexedDB
+ * (`mokuro-reader-yomitan-v2`, opened by the worker); the profile (dictionary order and flags, Anki
+ * card format, theme) is persisted to localStorage here after every change and handed to the worker
+ * on startup.
  */
 import { get } from 'svelte/store';
-import { createYomitan, type ProfileOptions, type Yomitan } from 'yomitan-core';
-import { createBrowserImageInfoReader, createIndexedDbStorage } from '@yomitan-core/web';
+import type { ProfileOptions, Yomitan } from 'yomitan-core';
 import { settings } from '$lib/settings';
 import { showSnackbar } from '$lib/util/snackbar';
 import { applyPendingDictionaryPreferences } from './profile-migration';
@@ -15,58 +16,13 @@ import {
   type DictionaryPreference
 } from './preferences';
 import { loadStoredProfile, saveStoredProfile } from './profile-store';
-import {
-  ALLOWED_RECOMMENDED_DICTIONARY_URLS,
-  buildRecommendedDictionaryProxyUrl
-} from './recommended-dictionaries';
+import type { EngineFailure, EngineInit } from './engine-protocol';
 
-const DATABASE_NAME = 'mokuro-reader-yomitan-v2';
 /** The Dexie database written by yomitan-core 1.x. Its layout is incompatible with the new storage. */
 const LEGACY_DATABASE_NAME = 'mokuro-reader-yomitan';
 
-type YomitanFetch = NonNullable<Parameters<typeof createYomitan>[0]['fetch']>;
-
 let clientPromise: Promise<Yomitan> | null = null;
-
-async function fetchWithRetry(url: string, init: object | undefined, attempts = 3) {
-  let lastError: unknown = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    try {
-      const response = await fetch(url, {
-        ...init,
-        cache: 'no-store',
-        redirect: 'follow'
-      });
-      if (response.ok) {
-        return response;
-      }
-
-      if (response.status >= 500 && attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-        continue;
-      }
-
-      throw new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      lastError = error;
-      if (attempt < attempts) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-        continue;
-      }
-    }
-  }
-
-  throw lastError ?? new Error('Failed to fetch dictionary URL');
-}
-
-/** Approved recommended dictionaries go through mokuro's proxy (GitHub has no CORS headers). */
-export const yomitanFetch: YomitanFetch = (input, init) => {
-  if (ALLOWED_RECOMMENDED_DICTIONARY_URLS.has(input)) {
-    return fetchWithRetry(buildRecommendedDictionaryProxyUrl(input), init);
-  }
-  return fetch(input, init as RequestInit);
-};
+let engineWorker: Worker | null = null;
 
 function deleteDatabase(name: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -129,6 +85,7 @@ function persistOnChange(client: Yomitan) {
 
     // A re-imported dictionary keeps the enabled flag it had before the upgrade.
     await applyPendingPreferences(client);
+    await ensureMainDictionary(client);
     return installed;
   };
 
@@ -142,17 +99,82 @@ function persistOnChange(client: Yomitan) {
   }
 }
 
+/** Starts the engine worker and connects to it; rejects if the worker can't boot. */
+async function connectEngine(profile: unknown): Promise<Yomitan> {
+  const worker = new Worker(new URL('./engine.worker.ts', import.meta.url), {
+    type: 'module',
+    name: 'yomitan'
+  });
+  const { port1, port2 } = new MessageChannel();
+  const failed = new Promise<never>((_, reject) => {
+    worker.addEventListener('error', (event) => reject(new Error(event.message)));
+    worker.addEventListener('message', (event: MessageEvent<EngineFailure>) =>
+      reject(new Error(event.data.error))
+    );
+  });
+  const init: EngineInit = { profile, port: port2 };
+  worker.postMessage(init, [port2]);
+
+  try {
+    // Loaded here, not at the top: the library is large and Settings (and so the reader's chunk)
+    // imports this file just to reach the client.
+    const { connectYomitan } = await import('@yomitan-core/web');
+    const client = await Promise.race([connectYomitan(port1), failed]);
+    engineWorker = worker;
+    retireOnWorkerFailure(worker, port1, client);
+    return client;
+  } catch (error) {
+    worker.terminate();
+    throw error;
+  }
+}
+
+/**
+ * If the worker dies after connecting, requests would wait forever and the singleton would keep
+ * handing out the dead client. Dispose it (which rejects what is still waiting), close the port,
+ * stop the worker and forget the client so the next `getYomitan()` connects a fresh one.
+ */
+function retireOnWorkerFailure(worker: Worker, port: MessagePort, client: Yomitan) {
+  const retire = () => {
+    if (engineWorker !== worker) return;
+    retireEngine(client, port);
+    showSnackbar('The dictionary engine stopped. Try again.');
+  };
+  worker.addEventListener('error', retire);
+  worker.addEventListener('messageerror', retire);
+  port.addEventListener('messageerror', retire);
+}
+
+/** Disposes `client`, stops its worker and forgets both, so the next `getYomitan()` reconnects. */
+function retireEngine(client: Yomitan, port?: MessagePort) {
+  const worker = engineWorker;
+  engineWorker = null;
+  clientPromise = null;
+  stopMirroringAnki?.();
+  stopMirroringAnki = null;
+  void client.dispose().catch(() => {});
+  port?.close();
+  worker?.terminate();
+}
+
 async function createClient(): Promise<Yomitan> {
   const stored = loadStoredProfile();
-  const client = await createYomitan({
-    storage: createIndexedDbStorage({ name: DATABASE_NAME }),
-    imageInfoReader: createBrowserImageInfoReader(),
-    fetch: yomitanFetch,
-    profile: stored
-  });
+  const client = await connectEngine(stored);
+  try {
+    await prepareClient(client, stored === undefined);
+  } catch (error) {
+    // A half-set-up client must not keep its worker alive: the next getYomitan() starts over.
+    retireEngine(client);
+    throw error;
+  }
+  void removeLegacyDatabase();
+  return client;
+}
 
-  if (stored === undefined) {
-    // The drawer has always been dark; the theme is otherwise profile-driven.
+/** Restores profile defaults, dictionaries and mirrored settings on a freshly connected client. */
+async function prepareClient(client: Yomitan, isNewProfile: boolean) {
+  if (isNewProfile) {
+    // The reader has always been dark; the theme is otherwise profile-driven.
     const profile = client.profile.get();
     profile.options.general.popupTheme = 'dark';
     await client.profile.set(profile);
@@ -163,9 +185,7 @@ async function createClient(): Promise<Yomitan> {
   await mirrorAnkiEnabled(client);
   // Flags a lost race left pending are applied on the next start.
   await applyPendingPreferences(client);
-
-  void removeLegacyDatabase();
-  return client;
+  await ensureMainDictionary(client);
 }
 
 let editQueue: Promise<unknown> = Promise.resolve();
@@ -193,6 +213,26 @@ async function mirrorAnkiEnabled(client: Yomitan) {
       console.error('Failed to mirror the AnkiConnect toggle into the Yomitan profile:', error)
     );
   });
+}
+
+/**
+ * Merged results (one entry per word with all its spellings and readings, which the Word View
+ * shows) need a main dictionary. When none is usable, the first enabled term dictionary becomes it.
+ */
+async function ensureMainDictionary(client: Yomitan) {
+  const { dictionaries, general } = client.profile.get().options;
+  const enabled = dictionaries.filter(({ enabled }) => enabled).map(({ name }) => name);
+  if (enabled.includes(general.mainDictionary)) return;
+
+  const installed = await client.dictionaries.list();
+  const main = enabled.find(
+    (name) => installed.find(({ title }) => title === name)?.counts?.terms.total
+  );
+  if (main) {
+    await queueEdit(client, (options) => {
+      options.general.mainDictionary = main;
+    });
+  }
 }
 
 /** Applies legacy enabled flags to re-imported dictionaries, through the edit queue. */
@@ -249,5 +289,7 @@ if (import.meta.hot) {
     stopMirroringAnki?.();
     stopMirroringAnki = null;
     void previous?.then((client) => client.dispose()).catch(() => {});
+    engineWorker?.terminate();
+    engineWorker = null;
   });
 }

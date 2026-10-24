@@ -1,13 +1,34 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
+/** What the worker stand-in and the connector saw. */
+const engine = vi.hoisted(() => ({
+  connects: 0,
+  disposed: 0,
+  workers: [] as {
+    listeners: Record<string, () => void>;
+    terminate: ReturnType<typeof vi.fn>;
+  }[]
+}));
+
 const state = vi.hoisted(() => ({
   profile: {
-    options: { tags: [] as string[], general: { popupTheme: 'light' }, anki: { enable: false } }
+    options: {
+      tags: [] as string[],
+      general: { popupTheme: 'light', mainDictionary: '' },
+      dictionaries: [
+        { name: 'Jiten (Manga)', enabled: true },
+        { name: 'JMdict', enabled: true },
+        { name: 'Off', enabled: false }
+      ],
+      anki: { enable: false }
+    }
   }
 }));
 
-vi.mock('yomitan-core', () => ({
-  createYomitan: async () => ({
+// The engine runs in a worker; the test connects straight to an in-memory client instead.
+vi.mock('@yomitan-core/web', () => ({
+  connectYomitan: async () => ({
+    id: ++engine.connects,
     profile: {
       get: () => structuredClone(state.profile),
       set: async (next: typeof state.profile) => {
@@ -18,13 +39,20 @@ vi.mock('yomitan-core', () => ({
       importYomitanSettings: async () => {},
       syncDictionaries: async () => {}
     },
-    dictionaries: { import: vi.fn(), delete: vi.fn(), update: vi.fn() },
-    dispose: async () => {}
+    dictionaries: {
+      import: vi.fn(),
+      delete: vi.fn(),
+      update: vi.fn(),
+      list: async () => [
+        { title: 'Jiten (Manga)', counts: { terms: { total: 0 } } },
+        { title: 'JMdict', counts: { terms: { total: 5 } } },
+        { title: 'Off', counts: { terms: { total: 9 } } }
+      ]
+    },
+    dispose: async () => {
+      engine.disposed++;
+    }
   })
-}));
-vi.mock('@yomitan-core/web', () => ({
-  createIndexedDbStorage: () => ({}),
-  createBrowserImageInfoReader: () => ({})
 }));
 const settingsStore = await vi.hoisted(async () => {
   const { writable } = await import('svelte/store');
@@ -44,6 +72,27 @@ import { editProfile, getYomitan } from './client';
 describe('editProfile', () => {
   beforeAll(() => {
     vi.stubGlobal('indexedDB', { databases: async () => [] });
+    vi.stubGlobal(
+      'Worker',
+      class {
+        listeners: Record<string, () => void> = {};
+        terminate = vi.fn();
+        constructor() {
+          engine.workers.push(this);
+        }
+        addEventListener(type: string, listener: () => void) {
+          this.listeners[type] = listener;
+        }
+        postMessage() {}
+      }
+    );
+    vi.stubGlobal(
+      'MessageChannel',
+      class {
+        port1 = { close: vi.fn(), addEventListener() {} };
+        port2 = {};
+      }
+    );
   });
 
   it('enables popup Anki actions when the mokuro integration is enabled', async () => {
@@ -55,6 +104,27 @@ describe('editProfile', () => {
     await getYomitan();
     settingsStore.set({ ankiConnectSettings: { enabled: false } });
     await vi.waitFor(() => expect(state.profile.options.anki.enable).toBe(false));
+  });
+
+  it('drops a client whose worker dies, so the next call connects a fresh one', async () => {
+    vi.resetModules();
+    const fresh = await import('./client');
+    const first = await fresh.getYomitan();
+    const worker = engine.workers.at(-1)!;
+    const disposedBefore = engine.disposed;
+
+    worker.listeners.error();
+    expect(worker.terminate).toHaveBeenCalled();
+    expect(engine.disposed).toBe(disposedBefore + 1);
+
+    const second = await fresh.getYomitan();
+    expect(second).not.toBe(first);
+    expect(engine.workers.at(-1)).not.toBe(worker);
+  });
+
+  it('makes the first enabled term dictionary the main one, for merged lookups', async () => {
+    await getYomitan();
+    expect(state.profile.options.general.mainDictionary).toBe('JMdict');
   });
 
   it('starts a fresh profile on the dark popup theme', async () => {

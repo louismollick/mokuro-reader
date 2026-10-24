@@ -272,7 +272,7 @@ export const DEFAULT_MODEL_CONFIGS: Record<string, Omit<ModelConfig, 'modelName'
 
 const defaultSettings: Settings = {
   defaultFullscreen: false,
-  yomitanPopupOnTextBoxTap: false,
+  yomitanPopupOnTextBoxTap: true,
   displayOCR: true,
   alwaysShowOCR: false,
   textBoxBorders: false,

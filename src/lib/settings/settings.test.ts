@@ -33,7 +33,7 @@ describe('migrateProfiles', () => {
       } as any
     });
 
-    expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(false);
+    expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(true);
   });
 });
 
