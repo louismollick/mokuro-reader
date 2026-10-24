@@ -61,7 +61,13 @@ describe('YomitanAnkiFormat', () => {
     clientMock.anki.markers.mockResolvedValue([]);
     mocks.getDeckNames.mockResolvedValue(['Default', 'Mining']);
     mocks.getModelNames.mockResolvedValue(['Kiku']);
-    mocks.getModelFieldNames.mockResolvedValue(['Expression', 'Sentence', 'Other']);
+    mocks.getModelFieldNames.mockResolvedValue([
+      'Expression',
+      'Sentence',
+      'Picture',
+      'MiscInfo',
+      'Other'
+    ]);
   });
 
   it('asks to connect AnkiConnect first when disconnected', () => {
@@ -84,6 +90,8 @@ describe('YomitanAnkiFormat', () => {
       expect(state.profile.options.anki.cardFormats[0].fields).toMatchObject({
         Expression: { value: '{expression}', overwriteMode: 'coalesce' },
         Sentence: { value: '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}' },
+        Picture: { value: '{screenshot}' },
+        MiscInfo: { value: '{series} {volume}' },
         Other: { value: '' }
       })
     );
