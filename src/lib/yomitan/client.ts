@@ -7,7 +7,6 @@
  */
 import { get } from 'svelte/store';
 import type { ProfileOptions, Yomitan } from 'yomitan-core';
-import { connectYomitan } from '@yomitan-core/web';
 import { settings } from '$lib/settings';
 import { showSnackbar } from '$lib/util/snackbar';
 import { applyPendingDictionaryPreferences } from './profile-migration';
@@ -116,6 +115,9 @@ async function connectEngine(profile: unknown): Promise<Yomitan> {
   worker.postMessage(init, [port2]);
 
   try {
+    // Loaded here, not at the top: the library is large and Settings (and so the reader's chunk)
+    // imports this file just to reach the client.
+    const { connectYomitan } = await import('@yomitan-core/web');
     const client = await Promise.race([connectYomitan(port1), failed]);
     engineWorker = worker;
     return client;
