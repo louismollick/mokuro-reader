@@ -4,7 +4,7 @@
  */
 import * as ort from 'onnxruntime-web/wasm';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
-import type { DetectRequest, DetectResponse } from './detect-panels';
+import type { DetectRequest, DetectResponse, WarmRequest } from './detect-panels';
 import { decodePanels, INPUT_SIZE, rgbaToTensor } from './yolo';
 
 ort.env.wasm.numThreads = 1;
@@ -19,7 +19,11 @@ function getSession(modelUrl: string): Promise<ort.InferenceSession> {
   return session;
 }
 
-self.onmessage = async ({ data }: MessageEvent<DetectRequest>) => {
+self.onmessage = async ({ data }: MessageEvent<DetectRequest | WarmRequest>) => {
+  if (data.warm) {
+    await getSession(data.modelUrl).catch(() => {});
+    return;
+  }
   try {
     const s = await getSession(data.modelUrl);
     const input = new ort.Tensor('float32', rgbaToTensor(data.rgba), [

@@ -11,17 +11,24 @@ export type { PanelBox, Rect } from './yolo';
 export const MODEL_PATH = '/models/manga-panel-detector-yolo26n.onnx';
 
 export type DetectRequest = {
+  warm?: undefined;
   id: number;
   /** RGBA pixels of the letterboxed 640x640 input. */
   rgba: Uint8ClampedArray;
   letterbox: Letterbox;
   modelUrl: string;
 };
+/** Asks the worker to load the model without running it. */
+export type WarmRequest = { warm: true; modelUrl: string };
 export type DetectResponse = { id: number; panels?: PanelBox[]; error?: string };
 
 let worker: Worker | undefined;
 let nextId = 0;
 const pending = new Map<number, { resolve: (p: PanelBox[]) => void; reject: (e: Error) => void }>();
+
+function modelUrl(): string {
+  return new URL(`${base}${MODEL_PATH}`, self.location.origin).href;
+}
 
 function getWorker(): Worker {
   if (worker) return worker;
@@ -71,11 +78,28 @@ export async function detectPanels(image: ImageBitmap | Blob): Promise<PanelBox[
       id,
       rgba,
       letterbox,
-      modelUrl: new URL(`${base}${MODEL_PATH}`, self.location.origin).href
+      modelUrl: modelUrl()
     };
     getWorker().postMessage(request, [rgba.buffer]);
     return await result;
   } finally {
     if (image instanceof Blob) bitmap.close();
   }
+}
+
+let warmed = false;
+
+/**
+ * Starts loading the model in idle time so the first crop doesn't pay for it. Safe to call often;
+ * a failure (offline before the first cache fill) is left for the first real crop to retry.
+ */
+export function warmUpPanelDetector(): void {
+  if (warmed) return;
+  warmed = true;
+  const start = () => {
+    const request: WarmRequest = { warm: true, modelUrl: modelUrl() };
+    getWorker().postMessage(request);
+  };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(start, { timeout: 2000 });
+  else setTimeout(start, 500);
 }

@@ -11,7 +11,7 @@ export function createCanvas(width: number, height: number): AnyCanvas {
 }
 
 export function getContext2D(canvas: AnyCanvas): Context2D {
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d') as Context2D | null;
   if (!ctx) throw new Error('2D canvas is not available');
   return ctx;
 }

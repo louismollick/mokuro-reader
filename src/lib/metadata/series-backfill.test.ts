@@ -4,9 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // by svelte-check's module resolution. Needed only to build ONE real gzipped
 // `.mokuro.gz` fixture — jsdom's own `Blob` has no `.stream()`, which
 // `decodeMokuroSidecar`'s `.gz` branch needs; Node's `buffer.Blob` does.
-// @ts-expect-error no type declarations for node:zlib in this project
 import { gzipSync } from 'node:zlib';
-// @ts-expect-error no type declarations for node:buffer in this project
 import { Blob as NodeBlob, Buffer } from 'node:buffer';
 import { readable } from 'svelte/store';
 import type { CloudFileMetadata } from '$lib/util/sync/provider-interface';
