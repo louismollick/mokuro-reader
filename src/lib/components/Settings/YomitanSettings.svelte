@@ -8,6 +8,7 @@
   import { promptConfirmation } from '$lib/util';
   import { editProfile, getYomitan } from '$lib/yomitan/client';
   import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries';
+  import YomitanAnkiFormat from './YomitanAnkiFormat.svelte';
 
   /** Installed dictionaries in profile order: this is what lookups search, in this priority. */
   let dictionaries = $state<DictionaryOptions[]>([]);
@@ -81,7 +82,7 @@
     });
 
     await client.dictionaries.import({
-      source: source as never,
+      source,
       onProgress: (progress) => {
         const percentage = progress.count > 0 ? (progress.index / progress.count) * 100 : 0;
         progressTrackerStore.updateProcess(processId, {
@@ -304,5 +305,7 @@
         </div>
       {/if}
     </div>
+
+    <YomitanAnkiFormat />
   </div>
 </AccordionItem>

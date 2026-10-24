@@ -34,7 +34,6 @@
     volumeMetadata?: VolumeMetadata;
     onClose?: () => void;
     outsideClose?: boolean;
-    allowSwipeClose?: boolean;
   }
 
   let {
@@ -43,8 +42,7 @@
     ankiEnabled = false,
     volumeMetadata,
     onClose,
-    outsideClose = true,
-    allowSwipeClose: _allowSwipeClose = true
+    outsideClose = true
   }: Props = $props();
 
   let client = $state.raw<Yomitan | null>(null);
@@ -87,7 +85,7 @@
   let controller = $derived.by(() => {
     void ankiTransportKey;
     if (!ankiEnabled || !client) return null;
-    return createDisplayController(client, { anki: createMokuroAnkiTransport() });
+    return createDisplayController(client, { anki: createMokuroAnkiTransport(volumeMetadata) });
   });
   let noteContext = $derived.by(() => {
     const view = currentView?.kind === 'term' ? currentView : null;

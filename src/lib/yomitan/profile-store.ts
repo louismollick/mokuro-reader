@@ -5,7 +5,6 @@
  */
 
 const PROFILE_STORAGE_KEY = 'mokuro:yomitanProfile';
-const LEGACY_MIGRATION_FLAG_KEY = 'mokuro:yomitanProfileMigrated';
 
 function isBrowser(): boolean {
   return typeof window !== 'undefined' && typeof localStorage !== 'undefined';
@@ -28,15 +27,4 @@ export function loadStoredProfile(): unknown {
 export function saveStoredProfile(profile: unknown): void {
   if (!isBrowser()) return;
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profile));
-}
-
-/** Whether the one-time conversion from mokuro's legacy Anki/dictionary settings still needs to run. */
-export function needsLegacySettingsMigration(): boolean {
-  if (!isBrowser()) return false;
-  return localStorage.getItem(LEGACY_MIGRATION_FLAG_KEY) !== '1';
-}
-
-export function markLegacySettingsMigrated(): void {
-  if (!isBrowser()) return;
-  localStorage.setItem(LEGACY_MIGRATION_FLAG_KEY, '1');
 }

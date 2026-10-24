@@ -21,6 +21,11 @@ describe('migrateProfiles', () => {
     expect(reloaded.Test.ankiConnectSettings.apiKey).toBe('saved-key');
   });
 
+  it('turns Capture off by default (Tap Lookup owns the single tap)', () => {
+    const migrated = migrateProfiles({ Fresh: {} as never });
+    expect(migrated.Fresh.ankiConnectSettings.triggerMethod).toBe('neither');
+  });
+
   it('adds yomitanPopupOnTextBoxTap default for existing profiles', () => {
     const migrated = migrateProfiles({
       LegacyProfile: {
@@ -29,10 +34,6 @@ describe('migrateProfiles', () => {
     });
 
     expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(false);
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupDeckName).toBe('Default');
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupModelName).toBe('Basic');
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupFieldMappings).toEqual({});
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupDuplicateBehavior).toBe('new');
   });
 });
 

@@ -14,13 +14,20 @@ const mocks = vi.hoisted(() => ({
   }
 }));
 
-vi.mock('$lib/anki-connect', () => ({
+vi.mock('$lib/anki-connect', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('$lib/anki-connect')>()),
   isAndroidMode: mocks.isAndroidMode
 }));
 vi.mock('$lib/settings', () => ({
   settings: {
     subscribe: (run: (value: unknown) => void) => {
-      run({ ankiConnectSettings: { url: 'http://anki.test:8765', apiKey: 'popup-test-key' } });
+      run({
+        ankiConnectSettings: {
+          url: 'http://anki.test:8765',
+          apiKey: 'popup-test-key',
+          tags: '{series} {volume} mokuro'
+        }
+      });
       return () => {};
     }
   }
@@ -43,14 +50,17 @@ describe('createMokuroAnkiTransport', () => {
     );
   });
 
-  it('creates the deck, then adds the note with sanitized tags', async () => {
-    const transport = createMokuroAnkiTransport();
+  it('creates the deck, then adds the note with the resolved global tags', async () => {
+    const transport = createMokuroAnkiTransport({
+      seriesTitle: 'My Series',
+      volumeTitle: 'Vol 1'
+    });
     const note = {
       deckName: 'Mining::My Series',
       modelName: 'Basic',
       fields: {},
       options: {},
-      tags: ['my series', '  ', 'mokuro']
+      tags: ['{series}', 'profile-tag']
     };
 
     await expect(transport.addNote(note)).resolves.toBe(42);
@@ -68,7 +78,22 @@ describe('createMokuroAnkiTransport', () => {
     expect(mocks.ankiConnect.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.base.addNote.mock.invocationCallOrder[0]
     );
-    expect(mocks.base.addNote).toHaveBeenCalledWith({ ...note, tags: ['my_series', 'mokuro'] });
+    // The profile's own tags are replaced, and no literal `{series}` reaches Anki.
+    expect(mocks.base.addNote).toHaveBeenCalledWith({
+      ...note,
+      tags: ['My_Series', 'Vol_1', 'mokuro']
+    });
+  });
+
+  it('drops the placeholders when no volume is open', async () => {
+    await createMokuroAnkiTransport().addNote({
+      deckName: 'D',
+      modelName: 'Basic',
+      fields: {},
+      options: {},
+      tags: []
+    });
+    expect(mocks.base.addNote).toHaveBeenCalledWith(expect.objectContaining({ tags: ['mokuro'] }));
   });
 
   it('creates the deck after a CORS permission grant', async () => {

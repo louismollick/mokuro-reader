@@ -98,12 +98,6 @@ export type AnkiConnectSettings = {
 
   // Tags (desktop only, not supported on Android)
   tags: string;
-
-  // Yomitan popup note settings
-  popupDeckName: string;
-  popupModelName: string;
-  popupFieldMappings: Record<string, string>;
-  popupDuplicateBehavior: 'new';
 };
 
 export type TimeSchedule = {
@@ -357,14 +351,10 @@ const defaultSettings: Settings = {
     widthField: 0,
     qualityField: 1,
     cropImage: false,
-    triggerMethod: 'both',
+    triggerMethod: 'neither',
     cardMode: 'create',
     quickCapture: false,
-    tags: '{series}',
-    popupDeckName: 'Default',
-    popupModelName: 'Basic',
-    popupFieldMappings: {},
-    popupDuplicateBehavior: 'new'
+    tags: '{series}'
   },
   catalogSettings: {
     stackingPreset: 'default',
@@ -485,13 +475,7 @@ export function migrateProfiles(profiles: Profiles): Profiles {
       triggerMethod: oldAnki.triggerMethod || defaultSettings.ankiConnectSettings.triggerMethod,
       cardMode: oldAnki.cardMode || defaultSettings.ankiConnectSettings.cardMode,
       quickCapture: oldAnki.quickCapture ?? defaultSettings.ankiConnectSettings.quickCapture,
-      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags,
-      popupDeckName: oldAnki.popupDeckName || defaultSettings.ankiConnectSettings.popupDeckName,
-      popupModelName: oldAnki.popupModelName || defaultSettings.ankiConnectSettings.popupModelName,
-      popupFieldMappings:
-        oldAnki.popupFieldMappings || defaultSettings.ankiConnectSettings.popupFieldMappings,
-      popupDuplicateBehavior:
-        oldAnki.popupDuplicateBehavior || defaultSettings.ankiConnectSettings.popupDuplicateBehavior
+      tags: oldAnki.tags ?? defaultSettings.ankiConnectSettings.tags
     };
 
     migratedProfile.nightModeSchedule = {

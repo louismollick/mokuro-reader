@@ -11,315 +11,104 @@
     Select,
     Toggle
   } from 'flowbite-svelte';
-  import {
-    DYNAMIC_TAGS,
-    fetchConnectionData,
-    getDeckNames,
-    getModelFieldNames,
-    getModelNames,
-    openConfigureModal
-  } from '$lib/anki-connect';
-  import type { ProfileOptions } from 'yomitan-core';
-  import { editProfile, getYomitan } from '$lib/yomitan/client';
+  import { DYNAMIC_TAGS, fetchConnectionData, openConfigureModal } from '$lib/anki-connect';
   import { onMount } from 'svelte';
 
+  // Connection state
   let connectionData = $derived($settings.ankiConnectSettings.connectionData);
   let isConnected = $derived(connectionData?.connected ?? false);
   let isConnecting = $state(false);
 
+  // Basic settings
   let url = $state($settings.ankiConnectSettings.url);
   let apiKey = $state($settings.ankiConnectSettings.apiKey ?? '');
+
+  // Card settings
   let cardMode = $state($settings.ankiConnectSettings.cardMode);
   let selectedModel = $state($settings.ankiConnectSettings.selectedModel);
+
+  // Image quality settings
   let heightField = $state($settings.ankiConnectSettings.heightField);
   let widthField = $state($settings.ankiConnectSettings.widthField);
   let qualityField = $state($settings.ankiConnectSettings.qualityField);
+
+  // Capture settings
   let cropImage = $state($settings.ankiConnectSettings.cropImage);
+  // One tag template, shared by Capture and Yomitan popup mining
   let ankiTags = $state($settings.ankiConnectSettings.tags);
-  // The popup's deck, note type, fields and duplicate behavior live in the yomitan-core profile
-  // (`anki.cardFormats[0]`, `anki.duplicateBehavior`); these mirror it for the form.
-  let popupDeckName = $state('');
-  let popupModelName = $state('');
-  let popupFieldMappings = $state<Record<string, string>>({});
-  let popupDuplicateBehavior = $state<DuplicateBehavior>('new');
-  let popupDecks = $state<string[]>([]);
-  let popupModels = $state<string[]>([]);
-  let popupModelFields = $state<string[]>([]);
-  let popupFieldMarkers = $state<string[]>([]);
-  let loadingPopupConfig = $state(false);
-  let popupProfileReady: Promise<void> = Promise.resolve();
 
-  type DuplicateBehavior = 'new' | 'overwrite' | 'prevent';
-  const duplicateBehaviorOptions: Array<{ value: DuplicateBehavior; name: string }> = [
-    { value: 'new', name: 'Add a new note (allow duplicates)' },
-    { value: 'overwrite', name: 'Overwrite the existing note' },
-    { value: 'prevent', name: 'Prevent duplicates' }
-  ];
-
-  function ensureCardFormat(options: ProfileOptions) {
-    if (!options.anki.cardFormats[0]) {
-      options.anki.cardFormats[0] = {
-        type: 'term',
-        name: 'Popup',
-        deck: 'Default',
-        model: '',
-        fields: {},
-        icon: 'big-circle'
-      } as ProfileOptions['anki']['cardFormats'][number];
-    }
-    return options.anki.cardFormats[0];
-  }
-
-  async function loadPopupProfileState() {
-    const client = await getYomitan();
-    const { anki } = client.profile.get().options;
-    const format = anki.cardFormats[0];
-    popupDeckName = format?.deck ?? '';
-    popupModelName = format?.model ?? '';
-    popupFieldMappings = Object.fromEntries(
-      Object.entries(format?.fields ?? {}).map(([field, { value }]) => [field, value])
-    );
-    popupDuplicateBehavior = anki.duplicateBehavior as DuplicateBehavior;
-  }
-
-  async function savePopupDeck() {
-    const deck = popupDeckName;
-    await editProfile((options) => {
-      ensureCardFormat(options).deck = deck;
-    });
-  }
-
-  async function savePopupFields(model: string, fields: Record<string, string>) {
-    await editProfile((options) => {
-      const format = ensureCardFormat(options);
-      const previous = format.fields ?? {};
-      format.model = model;
-      format.name = model || format.name;
-      format.fields = Object.fromEntries(
-        Object.entries(fields).map(([field, value]) => [
-          field,
-          { overwriteMode: previous[field]?.overwriteMode ?? 'coalesce', value }
-        ])
-      ) as typeof format.fields;
-    });
-  }
-
-  async function savePopupDuplicateBehavior() {
-    const behavior = popupDuplicateBehavior;
-    await editProfile((options) => {
-      options.anki.duplicateBehavior = behavior;
-    });
-  }
-
-  async function saveTags(tags: string) {
-    updateAnkiSetting('tags', tags);
-    // The popup reads its tags from the profile; keep both in sync.
-    await editProfile((options) => {
-      options.anki.tags = tags.split(/\s+/).filter((tag) => tag.length > 0);
-    });
-  }
-
+  // Trigger settings
   let doubleTapEnabled = $state(
     $settings.ankiConnectSettings.triggerMethod === 'doubleTap' ||
       $settings.ankiConnectSettings.triggerMethod === 'both'
   );
 
+  // Get configured models for update mode (only shown in update mode)
   let configuredModels = $derived.by(() => {
     const ankiSettings = $settings.ankiConnectSettings;
     return Object.keys(ankiSettings.updateModelConfigs || {});
   });
 
+  // Check if current model has a config for create mode (only shown in create mode)
   let hasCurrentModelConfig = $derived.by(() => {
     const ankiSettings = $settings.ankiConnectSettings;
     return !!(ankiSettings.createModelConfigs && ankiSettings.createModelConfigs[selectedModel]);
   });
 
+  // Available models from connection data
   let availableModels = $derived(connectionData?.models ?? []);
-  let modelOptions = $derived(availableModels.map((model) => ({ value: model, name: model })));
-  let popupDeckOptions = $derived(popupDecks.map((deck) => ({ value: deck, name: deck })));
-  let popupModelOptions = $derived(popupModels.map((model) => ({ value: model, name: model })));
-  // Kiku is a Lapis fork with the same field names, so both share one recommended mapping.
-  let hasRecommendedPopupMapping = $derived(
-    ['lapis', 'kiku'].includes(popupModelName.trim().toLowerCase())
-  );
-  let popupMappingButtonLabel = $derived(
-    hasRecommendedPopupMapping
-      ? `Use recommended ${popupModelName.trim()} mapping`
-      : 'Use default mapping'
-  );
+
+  // Model options for Select component
+  let modelOptions = $derived(availableModels.map((m) => ({ value: m, name: m })));
+
+  // Controls disabled state - disabled when not connected
   let disabled = $derived(!isConnected);
 
+  // Connect to AnkiConnect
   async function handleConnect() {
     isConnecting = true;
     try {
       const data = await fetchConnectionData(url || undefined);
-      if (!data) return;
-
-      updateAnkiSetting('connectionData', data);
-      updateAnkiSetting('enabled', true);
-      await editProfile((options) => {
-        options.anki.enable = true;
-      });
-
-      if (!selectedModel && data.models.length > 0) {
-        selectedModel = data.models[0];
-        updateAnkiSetting('selectedModel', selectedModel);
+      if (data) {
+        updateAnkiSetting('connectionData', data);
+        updateAnkiSetting('enabled', true); // Enable when connected
+        // Auto-select first model if none selected
+        if (!selectedModel && data.models.length > 0) {
+          selectedModel = data.models[0];
+          updateAnkiSetting('selectedModel', selectedModel);
+        }
       }
-
-      await loadPopupConfig();
     } finally {
       isConnecting = false;
     }
   }
 
+  // Disconnect from AnkiConnect
   function handleDisconnect() {
     updateAnkiSetting('connectionData', null);
-    updateAnkiSetting('enabled', false);
-    void editProfile((options) => {
-      options.anki.enable = false;
-    });
-    popupDecks = [];
-    popupModels = [];
-    popupModelFields = [];
+    updateAnkiSetting('enabled', false); // Disable when disconnected
   }
 
+  // Update double-tap trigger method
   function updateDoubleTap(enabled: boolean) {
     updateAnkiSetting('triggerMethod', enabled ? 'doubleTap' : 'neither');
   }
 
+  // Handle model change
   function handleModelChange() {
     updateAnkiSetting('selectedModel', selectedModel);
   }
 
-  async function loadPopupConfig() {
-    loadingPopupConfig = true;
-    try {
-      await popupProfileReady;
-      const [decks, models, markers] = await Promise.all([
-        getDeckNames(),
-        getModelNames(),
-        getYomitan()
-          .then((client) => client.anki.markers('term'))
-          .catch(() => [] as string[])
-      ]);
-
-      popupDecks = decks;
-      popupModels = models;
-      popupFieldMarkers = [...markers].sort((a, b) => a.localeCompare(b));
-
-      if (!popupDeckName && decks.length > 0) {
-        popupDeckName = decks[0];
-        await savePopupDeck();
-      }
-
-      if (!popupModelName && models.length > 0) {
-        popupModelName = models[0];
-      }
-
-      if (popupModelName) {
-        await loadPopupModelFields(popupModelName);
-      }
-    } finally {
-      loadingPopupConfig = false;
-    }
-  }
-
-  let modelFieldsRequest = 0;
-
-  async function loadPopupModelFields(modelName: string) {
-    const request = ++modelFieldsRequest;
-    const fields = await getModelFieldNames(modelName);
-    // A newer model selection wins over this (slower) request.
-    if (request !== modelFieldsRequest) return;
-    if (fields.length === 0) {
-      // A failed request returns []: keep the mapping of the same model, but still save a newly
-      // selected model (its old fields belong to the previous note type).
-      await editProfile((options) => {
-        const format = ensureCardFormat(options);
-        if (format.model !== modelName) {
-          format.model = modelName;
-          format.name = modelName || format.name;
-          format.fields = {} as typeof format.fields;
-        }
-      });
-      return;
-    }
-    popupModelFields = fields;
-    // Only the model's own fields, keeping the values already mapped for them.
-    popupFieldMappings = Object.fromEntries(
-      popupModelFields.map((field) => [field, popupFieldMappings[field] ?? ''])
-    );
-    await savePopupFields(modelName, popupFieldMappings);
-  }
-
-  async function onPopupModelChange() {
-    if (!popupModelName) return;
-    await loadPopupModelFields(popupModelName);
-  }
-
-  function updatePopupFieldMapping(field: string, value: string) {
-    popupFieldMappings = {
-      ...popupFieldMappings,
-      [field]: value
-    };
-    void savePopupFields(popupModelName, popupFieldMappings);
-  }
-
-  function applyRecommendedPopupMappings() {
-    const next = { ...popupFieldMappings };
-    const findField = (name: string) =>
-      popupModelFields.find((field) => field.toLowerCase() === name.toLowerCase()) ||
-      popupModelFields.find((field) => field.toLowerCase().includes(name.toLowerCase()));
-
-    if (hasRecommendedPopupMapping) {
-      const lapisMappings: Array<[string, string]> = [
-        ['Expression', '{expression}'],
-        ['ExpressionFurigana', '{furigana-plain}'],
-        ['ExpressionReading', '{reading}'],
-        ['ExpressionAudio', '{audio}'],
-        ['SelectionText', '{popup-selection-text}'],
-        ['Sentence', '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}'],
-        ['Glossary', '{glossary}'],
-        ['PitchPosition', '{pitch-accent-positions}'],
-        ['PitchCategories', '{pitch-accent-categories}'],
-        ['Frequency', '{frequencies}'],
-        ['FreqSort', '{frequency-harmonic-rank}'],
-        ['MiscInfo', '{document-title}']
-      ];
-
-      for (const [fieldName, value] of lapisMappings) {
-        const field = findField(fieldName);
-        if (field) next[field] = value;
-      }
-    } else {
-      const expressionField = findField('expression') || popupModelFields[0];
-      const readingField = findField('reading');
-      const glossaryField = findField('definition') || findField('glossary');
-      const sentenceField = findField('sentence');
-
-      if (expressionField) next[expressionField] = '{expression}';
-      if (readingField) next[readingField] = '{reading}';
-      if (glossaryField) next[glossaryField] = '{glossary}';
-      if (sentenceField) next[sentenceField] = '{sentence}';
-    }
-
-    popupFieldMappings = next;
-    void savePopupFields(popupModelName, popupFieldMappings);
-  }
-
+  // Append a dynamic tag to the template
   function insertTag(tag: string) {
     ankiTags = ankiTags ? `${ankiTags} ${tag}`.trim() : tag;
-    void saveTags(ankiTags);
+    updateAnkiSetting('tags', ankiTags);
   }
 
+  // Try auto-connect on mount if we have a URL and were previously connected
   onMount(() => {
-    popupProfileReady = loadPopupProfileState().catch((error) => {
-      console.error('Failed to load the Yomitan popup settings:', error);
-    });
     if (url && !connectionData && $settings.ankiConnectSettings.enabled) {
-      void handleConnect();
-    } else if ($settings.ankiConnectSettings.enabled) {
-      void loadPopupConfig();
+      handleConnect();
     }
   });
 </script>
@@ -327,12 +116,14 @@
 <AccordionItem>
   {#snippet header()}Anki Connect{/snippet}
   <div class="flex flex-col gap-5">
+    <!-- Setup Instructions -->
     <Helper>
       To use AnkiConnect integration, add this reader (<code class="text-primary-500"
         >{$page.url.origin}</code
       >) to your AnkiConnect <b class="text-primary-500">webCorsOriginList</b> setting.
     </Helper>
 
+    <!-- Connection Section -->
     <div>
       <Label class="text-gray-900 dark:text-white">AnkiConnect URL:</Label>
       <div class="flex gap-2">
@@ -342,12 +133,10 @@
           bind:value={url}
           onchange={() => {
             updateAnkiSetting('url', url);
+            // Clear connection data when URL changes
             if (isConnected) {
               updateAnkiSetting('connectionData', null);
             }
-            popupDecks = [];
-            popupModels = [];
-            popupModelFields = [];
           }}
           class="flex-1"
         />
@@ -378,6 +167,7 @@
         {/if}
       </div>
 
+      <!-- Connection Status -->
       {#if isConnected}
         <div
           class="mt-2 rounded bg-green-100 p-2 text-sm text-green-800 dark:bg-green-900 dark:text-green-200"
@@ -390,6 +180,7 @@
       {/if}
     </div>
 
+    <!-- API Key -->
     <div>
       <Label class="text-gray-900 dark:text-white">AnkiConnect API key:</Label>
       <Input
@@ -404,97 +195,9 @@
       />
     </div>
 
+    <!-- Card Mode (only when connected) -->
     {#if isConnected}
-      <div class="rounded border border-gray-200 p-3 dark:border-gray-700">
-        <div class="mb-2 flex items-center justify-between">
-          <h4 class="text-sm font-semibold text-gray-900 dark:text-white">
-            Yomitan Popup Note Mapping
-          </h4>
-          <Button
-            size="xs"
-            color="alternative"
-            onclick={loadPopupConfig}
-            disabled={disabled || loadingPopupConfig}
-          >
-            {loadingPopupConfig ? 'Loading...' : 'Refresh'}
-          </Button>
-        </div>
-        <Helper class="mb-3">
-          Configure deck, note type, and field mappings used by the Yomitan popup Add to Anki
-          action.
-        </Helper>
-
-        <div class="mb-3">
-          <Label class="text-gray-900 dark:text-white">
-            Popup deck:
-            <Select
-              {disabled}
-              items={popupDeckOptions}
-              bind:value={popupDeckName}
-              onchange={() => void savePopupDeck()}
-            />
-          </Label>
-        </div>
-
-        <div class="mb-3">
-          <Label class="text-gray-900 dark:text-white">
-            Popup note type:
-            <Select
-              {disabled}
-              items={popupModelOptions}
-              bind:value={popupModelName}
-              onchange={onPopupModelChange}
-            />
-          </Label>
-        </div>
-
-        <div class="mb-3">
-          <Label class="text-gray-900 dark:text-white">
-            When the note already exists:
-            <Select
-              {disabled}
-              items={duplicateBehaviorOptions}
-              bind:value={popupDuplicateBehavior}
-              onchange={() => void savePopupDuplicateBehavior()}
-            />
-          </Label>
-        </div>
-
-        <div class="mb-3">
-          <Button {disabled} size="xs" color="alternative" onclick={applyRecommendedPopupMappings}>
-            {popupMappingButtonLabel}
-          </Button>
-        </div>
-
-        {#if popupModelFields.length === 0}
-          <p class="text-xs text-gray-400">
-            No popup fields loaded yet. Connect to AnkiConnect and refresh.
-          </p>
-        {:else}
-          <div class="flex flex-col gap-3">
-            {#each popupModelFields as field}
-              <div class="rounded border border-gray-200 p-2 dark:border-gray-700">
-                <Label class="mb-1 text-gray-900 dark:text-white">{field}</Label>
-                <Input
-                  {disabled}
-                  type="text"
-                  value={popupFieldMappings[field] || ''}
-                  onchange={(event) =>
-                    updatePopupFieldMapping(field, (event.currentTarget as HTMLInputElement).value)}
-                  list="popup-marker-options"
-                  placeholder={'{expression}'}
-                />
-              </div>
-            {/each}
-            <datalist id="popup-marker-options">
-              {#each popupFieldMarkers as marker}
-                <option value={`{${marker}}`}></option>
-              {/each}
-            </datalist>
-          </div>
-        {/if}
-      </div>
-
+      <!-- Card Mode -->
       <div>
         <Label class="mb-2 text-gray-900 dark:text-white">Card Mode:</Label>
         <div class="flex flex-wrap gap-4">
@@ -526,6 +229,7 @@
         </Helper>
       </div>
 
+      <!-- Create Mode: Note Type Selection + Configure -->
       {#if cardMode === 'create'}
         <div>
           <Label class="text-gray-900 dark:text-white">Note Type:</Label>
@@ -554,14 +258,15 @@
         </div>
       {/if}
 
+      <!-- Update Mode: Configured Models List -->
       {#if cardMode === 'update'}
         <hr />
         <div>
           <h4 class="mb-2 text-gray-900 dark:text-white">Update Mode Configurations</h4>
-          <Helper class="mb-2">
-            Configure how each note type is updated. The note type is detected from the card being
-            updated.
-          </Helper>
+          <Helper class="mb-2"
+            >Configure how each note type is updated. The note type is detected from the card being
+            updated.</Helper
+          >
 
           {#if configuredModels.length > 0}
             <div class="space-y-1">
@@ -591,6 +296,7 @@
         </div>
       {/if}
 
+      <!-- Trigger Settings -->
       <hr />
       <h4 class="text-gray-900 dark:text-white">Trigger Settings</h4>
       <div>
@@ -601,9 +307,9 @@
         >
           Double-tap to capture
         </Toggle>
-        <Helper class="mt-1">
-          Right-click (long press on mobile) any text box for more options
-        </Helper>
+        <Helper class="mt-1"
+          >Right-click (long press on mobile) any text box for more options</Helper
+        >
       </div>
 
       <div>
@@ -617,13 +323,14 @@
         <Helper class="mt-1">Applies to quick captures and the Anki capture modal.</Helper>
       </div>
 
+      <!-- Tags -->
       <div>
         <Label class="text-gray-900 dark:text-white">Tags:</Label>
         <Input
           {disabled}
           type="text"
           bind:value={ankiTags}
-          onchange={() => void saveTags(ankiTags)}
+          onchange={() => updateAnkiSetting('tags', ankiTags)}
         />
         <div class="mt-2 flex flex-wrap gap-2">
           {#each DYNAMIC_TAGS as { tag, description }}
@@ -638,11 +345,10 @@
             </button>
           {/each}
         </div>
-        <Helper class="mt-1"
-          >Global tag template used by capture flows that do not override tags.</Helper
-        >
+        <Helper class="mt-1">Tag template for Capture and Yomitan popup cards.</Helper>
       </div>
 
+      <!-- Image Quality Settings -->
       <hr />
       <h4 class="text-gray-900 dark:text-white">Image Quality</h4>
       <Helper>Customize the image size and quality stored in Anki</Helper>
@@ -685,6 +391,7 @@
         />
       </div>
     {:else}
+      <!-- Not Connected State -->
       <div
         class="rounded border border-gray-200 bg-gray-50 p-4 text-center text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
       >
