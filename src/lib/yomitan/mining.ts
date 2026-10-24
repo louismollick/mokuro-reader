@@ -124,13 +124,22 @@ export async function mineWord({
     }
   }
 
-  const { noteId, warnings: stored } = await controller.addNote(
-    entry,
-    cardFormatIndex,
-    context,
-    extraMarkers,
-    cropped ? { screenshot: { data: cropped.blob, mediaType: cropped.blob.type } } : undefined
-  );
+  let added: Awaited<ReturnType<DisplayController['addNote']>>;
+  let fileName: string | null = null;
+  try {
+    added = await controller.addNote(
+      entry,
+      cardFormatIndex,
+      context,
+      extraMarkers,
+      cropped ? { screenshot: { data: cropped.blob, mediaType: cropped.blob.type } } : undefined
+    );
+  } finally {
+    // Also after a failed add: the transport may have stored the file, and a stale record must not
+    // be matched to a later crop of the same size.
+    if (cropped) fileName = screenshots.take(cropped.blob);
+  }
+  const { noteId, warnings: stored } = added;
   warnings.push(...stored);
 
   return {
@@ -142,7 +151,7 @@ export async function mineWord({
             noteId,
             cardFormatIndex,
             source,
-            fileName: screenshots.take(cropped.blob),
+            fileName,
             rect: cropped.rect,
             image: cropped.blob
           }

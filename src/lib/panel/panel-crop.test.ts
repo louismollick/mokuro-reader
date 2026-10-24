@@ -45,6 +45,22 @@ describe('cropPanel', () => {
     );
   });
 
+  it('falls back to the padded text box when detection stalls, and ignores a late result', async () => {
+    vi.useFakeTimers();
+    try {
+      let finish: (panels: unknown[]) => void = () => {};
+      mocks.detectPanels.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      const crop = cropPanel(new Blob(['page']), { x1: 100, y1: 200, x2: 200, y2: 400 });
+      await vi.advanceTimersByTimeAsync(6000);
+      const { rect } = await crop;
+      // The padded box, not the (late) panel below.
+      expect(rect).toEqual({ x1: 0, y1: 140, x2: 300, y2: 460 });
+      finish([{ x1: 0, y1: 0, x2: 2000, y2: 3000, score: 1 }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('pads the scaled text box when no panel holds it', async () => {
     mocks.detectPanels.mockResolvedValue([]);
     const { rect } = await cropPanel(

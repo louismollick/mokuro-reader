@@ -101,7 +101,10 @@ self.addEventListener('fetch', (event) => {
       const cachedResponse = await largeCache.match(event.request);
       if (cachedResponse) return cachedResponse;
       const response = await fetch(event.request);
-      if (response.status === 200) largeCache.put(event.request, response.clone());
+      if (response.status === 200) {
+        // Keeps the worker alive until the (large) body is stored; a failed put only loses the cache.
+        event.waitUntil(largeCache.put(event.request, response.clone()).catch(() => {}));
+      }
       return response;
     }
 

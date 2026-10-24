@@ -93,6 +93,21 @@ describe('mineWord', () => {
     expect(result.panel?.fileName).toBeNull();
   });
 
+  it('forgets the stored file when the add fails', async () => {
+    const screenshots = new ScreenshotLog();
+    const failing = {
+      addNote: vi.fn(async () => {
+        screenshots.record('yomitan_browser_screenshot_1.webp', { data: 'A'.repeat(8) });
+        throw new Error('Anki is closed');
+      })
+    } as unknown as DisplayController;
+    await expect(run(failing, { crop: async () => ({ blob, rect }), screenshots })).rejects.toThrow(
+      'Anki is closed'
+    );
+    // A later crop of the same size must not pick up the failed add's file.
+    expect(screenshots.take(blob)).toBeNull();
+  });
+
   it('skips the crop without a page image', async () => {
     const { controller: fake } = controller();
     const crop = vi.fn();

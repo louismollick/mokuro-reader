@@ -65,8 +65,33 @@ function scaleToBitmap(
   return { x1: rect.x1 * sx, y1: rect.y1 * sy, x2: rect.x2 * sx, y2: rect.y2 * sy };
 }
 
+/** Detection gets this long on the first call (loading the model and wasm), then the warm limit. */
+const COLD_DETECTION_MS = 6000;
+const WARM_DETECTION_MS = 3000;
+let detectedOnce = false;
+
+/** Panels from the detector, or none if it fails or takes too long; a late result is ignored. */
+async function detectWithin(bitmap: ImageBitmap): Promise<PanelBox[]> {
+  const detection = detectPanels(bitmap);
+  detection.catch(() => {}); // a late failure after the timeout is not an error anyone handles
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Panel detection timed out')),
+      detectedOnce ? WARM_DETECTION_MS : COLD_DETECTION_MS
+    );
+  });
+  try {
+    const panels = await Promise.race([detection, timeout]);
+    detectedOnce = true;
+    return panels;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * Crops the panel holding `textBox` out of a page image. If detection fails
+ * Crops the panel holding `textBox` out of a page image. If detection fails or stalls
  * (model unavailable offline, etc.) it falls back to the padded text box.
  * Returns the encoded image and the source rect that was cut, in the image's own pixels.
  */
@@ -79,7 +104,7 @@ export async function cropPanel(
   try {
     let panels: PanelBox[] = [];
     try {
-      panels = await detectPanels(bitmap);
+      panels = await detectWithin(bitmap);
     } catch (err) {
       console.warn('Panel detection failed, using padded text box', err);
     }
