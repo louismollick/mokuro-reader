@@ -85,6 +85,7 @@ function persistOnChange(client: Yomitan) {
 
     // A re-imported dictionary keeps the enabled flag it had before the upgrade.
     await applyPendingPreferences(client);
+    await ensureMainDictionary(client);
     return installed;
   };
 
@@ -143,6 +144,7 @@ async function createClient(): Promise<Yomitan> {
   await mirrorAnkiEnabled(client);
   // Flags a lost race left pending are applied on the next start.
   await applyPendingPreferences(client);
+  await ensureMainDictionary(client);
 
   void removeLegacyDatabase();
   return client;
@@ -173,6 +175,26 @@ async function mirrorAnkiEnabled(client: Yomitan) {
       console.error('Failed to mirror the AnkiConnect toggle into the Yomitan profile:', error)
     );
   });
+}
+
+/**
+ * Merged results (one entry per word with all its spellings and readings, which the Word View
+ * shows) need a main dictionary. When none is usable, the first enabled term dictionary becomes it.
+ */
+async function ensureMainDictionary(client: Yomitan) {
+  const { dictionaries, general } = client.profile.get().options;
+  const enabled = dictionaries.filter(({ enabled }) => enabled).map(({ name }) => name);
+  if (enabled.includes(general.mainDictionary)) return;
+
+  const installed = await client.dictionaries.list();
+  const main = enabled.find(
+    (name) => installed.find(({ title }) => title === name)?.counts?.terms.total
+  );
+  if (main) {
+    await queueEdit(client, (options) => {
+      options.general.mainDictionary = main;
+    });
+  }
 }
 
 /** Applies legacy enabled flags to re-imported dictionaries, through the edit queue. */

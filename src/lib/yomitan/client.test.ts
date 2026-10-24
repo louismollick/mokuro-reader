@@ -2,7 +2,16 @@ import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
   profile: {
-    options: { tags: [] as string[], general: { popupTheme: 'light' }, anki: { enable: false } }
+    options: {
+      tags: [] as string[],
+      general: { popupTheme: 'light', mainDictionary: '' },
+      dictionaries: [
+        { name: 'Jiten (Manga)', enabled: true },
+        { name: 'JMdict', enabled: true },
+        { name: 'Off', enabled: false }
+      ],
+      anki: { enable: false }
+    }
   }
 }));
 
@@ -19,7 +28,16 @@ vi.mock('@yomitan-core/web', () => ({
       importYomitanSettings: async () => {},
       syncDictionaries: async () => {}
     },
-    dictionaries: { import: vi.fn(), delete: vi.fn(), update: vi.fn() },
+    dictionaries: {
+      import: vi.fn(),
+      delete: vi.fn(),
+      update: vi.fn(),
+      list: async () => [
+        { title: 'Jiten (Manga)', counts: { terms: { total: 0 } } },
+        { title: 'JMdict', counts: { terms: { total: 5 } } },
+        { title: 'Off', counts: { terms: { total: 9 } } }
+      ]
+    },
     dispose: async () => {}
   })
 }));
@@ -67,6 +85,11 @@ describe('editProfile', () => {
     await getYomitan();
     settingsStore.set({ ankiConnectSettings: { enabled: false } });
     await vi.waitFor(() => expect(state.profile.options.anki.enable).toBe(false));
+  });
+
+  it('makes the first enabled term dictionary the main one, for merged lookups', async () => {
+    await getYomitan();
+    expect(state.profile.options.general.mainDictionary).toBe('JMdict');
   });
 
   it('starts a fresh profile on the dark popup theme', async () => {

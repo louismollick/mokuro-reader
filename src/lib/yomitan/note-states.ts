@@ -1,3 +1,4 @@
+import { primaryHeadword } from './entry-data';
 import type { AnkiNoteContext, DisplayController, TermDictionaryEntry } from 'yomitan-core';
 
 export interface NoteTarget {
@@ -18,7 +19,7 @@ export class NoteStates {
   private cache = new Map<string, Promise<NoteTarget | null>>();
 
   private key(entry: TermDictionaryEntry) {
-    const { term, reading } = entry.headwords[0];
+    const { term, reading } = primaryHeadword(entry);
     return `${term}|${reading}`;
   }
 

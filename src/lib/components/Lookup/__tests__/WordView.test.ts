@@ -20,7 +20,29 @@ vi.mock('@yomitan-core/web', () => ({ scopeCssToHost: (css: string) => css }));
 
 /** A term entry shaped like a `lookup.segment` result for 食べる looked up as 食べなかった. */
 const entry = {
-  headwords: [{ index: 0, headwordIndex: 0, term: '食べる', reading: 'たべる' }],
+  headwords: [
+    {
+      index: 0,
+      headwordIndex: 0,
+      term: '食べる',
+      reading: 'たべる',
+      sources: [{ isPrimary: true }]
+    },
+    {
+      index: 1,
+      headwordIndex: 1,
+      term: '喰べる',
+      reading: 'たべる',
+      sources: [{ isPrimary: false }]
+    },
+    {
+      index: 2,
+      headwordIndex: 2,
+      term: '食べる',
+      reading: 'くべる',
+      sources: [{ isPrimary: false }]
+    }
+  ],
   pronunciations: [
     {
       headwordIndex: 0,
@@ -62,7 +84,7 @@ const client = {
       {
         dictionary: 'JMdict [2026-10-23]',
         dictionaryAlias: 'JMdict [2026-10-23]',
-        html: '<ol><li class="definition-item"><div class="definition-tag-list"><span class="tag">v1</span></div><ul class="gloss-list"><li class="gloss-item">to eat</li></ul></li></ol>'
+        html: '<ol><li class="definition-item"><div class="definition-tag-list"><span class="tag" data-category="default">1</span><span class="tag" data-category="partOfSpeech">v1</span><span class="tag" data-category="dictionary">JMdict</span></div><ul class="gloss-list"><li class="gloss-item">to eat</li></ul></li></ol>'
       },
       {
         dictionary: 'Jitendex',
@@ -111,6 +133,8 @@ describe('WordView', () => {
     expect(getByText('#1,835')).toBeTruthy();
     expect(getByText('Jiten')).toBeTruthy();
     expect(getByText('食べなかった ← negative · past')).toBeTruthy();
+    // The entry's other readings and spellings go on one small line.
+    expect(getByText('くべる · 喰べる')).toBeTruthy();
   });
 
   it('pushes a Kanji View from a headword kanji', async () => {
@@ -130,6 +154,10 @@ describe('WordView', () => {
     expect(label?.textContent).toBe('JMdict');
     expect(label?.parentElement?.classList.contains('definition-tag-list')).toBe(true);
     expect(roots[0]?.querySelector('.definition-item')?.textContent).toContain('to eat');
+    // The sense number and dictionary tags repeat the list number and the label; part of speech stays.
+    expect([...(roots[0]?.querySelectorAll('.tag') ?? [])].map((tag) => tag.textContent)).toEqual([
+      'v1'
+    ]);
     // ...or, with no tags, floats in front of the first gloss.
     const floated = roots[1]?.querySelector('.dictionary-label');
     expect(floated?.textContent).toBe('Jitendex');

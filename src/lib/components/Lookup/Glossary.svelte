@@ -3,7 +3,7 @@
 
   /**
    * The sheet's look over Yomitan's popup CSS (hence `!important`): plain gray tags instead of
-   * badges, no dictionary tag (the run-in label names it), no collapse button.
+   * badges, no collapse button, no forms table.
    */
   const LABEL_CSS = `
     :host { display: block; font-size: 14px; line-height: 1.5; color: #fff; }
@@ -24,7 +24,9 @@
     }
     .dictionary-label.float { float: left; }
     .tag { margin-right: 0.5em !important; }
-    .tag[data-category='dictionary'], .expansion-button { display: none !important; }
+    .expansion-button { display: none !important; }
+    /* JMdict's table of other spellings and readings: the headword's small line has them. */
+    .definition-item:has([data-sc-content='formsTable']) { display: none !important; }
   `;
   let shared: { css: string; sheets: CSSStyleSheet[] } | null = null;
 
@@ -71,6 +73,17 @@
 
     const container = document.createElement('div');
     container.innerHTML = block.html;
+    // The list numbers the senses and the run-in label names the dictionary, so drop the
+    // dictionary tag and the numeric "Sense #n" tag; part-of-speech and other tags stay.
+    for (const tag of container.querySelectorAll<HTMLElement>('.tag')) {
+      const { category } = tag.dataset;
+      if (
+        category === 'dictionary' ||
+        (category === 'default' && /^\d+$/.test(tag.textContent ?? ''))
+      ) {
+        tag.remove();
+      }
+    }
     const label = document.createElement('span');
     label.className = 'dictionary-label';
     label.textContent = block.dictionaryAlias.replace(/\s*\[[^\]]*\]\s*$/, '');

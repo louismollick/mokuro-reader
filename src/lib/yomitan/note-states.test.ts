@@ -3,7 +3,7 @@ import type { DisplayController, TermDictionaryEntry } from 'yomitan-core';
 import { NoteStates } from './note-states';
 
 const entry = {
-  headwords: [{ term: '猫', reading: 'ねこ' }]
+  headwords: [{ term: '猫', reading: 'ねこ', sources: [{ isPrimary: true }] }]
 } as unknown as TermDictionaryEntry;
 
 function controllerWith(format: object | undefined) {

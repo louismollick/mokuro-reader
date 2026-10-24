@@ -1,9 +1,11 @@
 <script lang="ts">
   import type { TermDictionaryEntry } from 'yomitan-core';
   import {
+    alternateForms,
     distributeFurigana,
     frequencyLabels,
     inflectionNames,
+    primaryHeadword,
     primaryPitchPositions
   } from '$lib/yomitan/entry-data';
   import { pitchMorae } from '$lib/yomitan/pitch';
@@ -20,12 +22,13 @@
 
   let { entry, surface, compact, onKanji }: Props = $props();
 
-  let headword = $derived(entry.headwords[0]);
+  let headword = $derived(primaryHeadword(entry));
   let segments = $derived(distributeFurigana(headword.term, headword.reading));
   let reading = $derived(headword.reading || headword.term);
   let pitches = $derived(primaryPitchPositions(entry));
   let frequencies = $derived(compact ? frequencyLabels(entry).slice(0, 1) : frequencyLabels(entry));
   let inflections = $derived(inflectionNames(entry));
+  let alternates = $derived(alternateForms(entry));
 
   const isKanji = (char: string) => /\p{Script=Han}/u.test(char) && char !== '々';
 </script>
@@ -56,6 +59,10 @@
       </span>
     {/each}
   </div>
+
+  {#if alternates.length > 0}
+    <p class="text-[12px] text-[#9a9a9a]">{alternates.join(' · ')}</p>
+  {/if}
 
   {#if frequencies.length > 0}
     <p class="flex flex-wrap gap-x-3 text-[12px] text-[#9a9a9a]">

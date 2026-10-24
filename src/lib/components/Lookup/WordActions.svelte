@@ -3,6 +3,7 @@
   import type { AnkiNoteContext, TermDictionaryEntry, Yomitan } from 'yomitan-core';
   import { syncAnkiWeb } from '$lib/anki-connect';
   import { showSnackbar } from '$lib/util/snackbar';
+  import { primaryHeadword } from '$lib/yomitan/entry-data';
   import type { NoteStates } from '$lib/yomitan/note-states';
 
   type DisplayController = ReturnType<typeof createDisplayController>;
@@ -19,7 +20,7 @@
 
   let { client, entry, controller, noteContext, extraMarkers, noteStates }: Props = $props();
 
-  let headword = $derived(entry.headwords[0]);
+  let headword = $derived(primaryHeadword(entry));
   let audio = $derived(client.profile.get().options.audio);
   let hasAudio = $derived(audio.sources.length > 0 || audio.enableDefaultAudioSources);
 

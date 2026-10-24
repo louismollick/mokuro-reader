@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { createDisplayController } from 'yomitan-core';
-  import type { AnkiNoteContext, SegmentToken, Yomitan } from 'yomitan-core';
+  import type { AnkiNoteContext, SegmentToken, TermDictionaryEntry, Yomitan } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import { settings } from '$lib/settings';
   import { getYomitan } from '$lib/yomitan/client';
@@ -43,6 +43,8 @@
     tokens: SegmentToken[];
     glossaryStyle: { css: string; attributes: Record<string, string> };
     noteStates: NoteStates;
+    /** Merged entries per looked-up text: one per word, with all its spellings and readings. */
+    merged: Map<string, Promise<TermDictionaryEntry[]>>;
     loadKanji: ReturnType<typeof createKanjiInfoLoader>;
   }
 
@@ -91,6 +93,7 @@
         tokens,
         glossaryStyle: { css, attributes: client.render.attributes() },
         noteStates: new NoteStates(),
+        merged: new Map(),
         loadKanji: createKanjiInfoLoader((character) => client.lookup.kanji(character))
       };
       history = startHistory(offset === null ? null : pickWordIndex(tokens, offset));
@@ -100,6 +103,23 @@
       console.error('Tap Lookup failed:', error);
       status = 'error';
     }
+  }
+
+  /**
+   * The entries the Word View shows for a text: a merge-mode lookup, so a word with several
+   * readings or spellings is one entry (Segmentation itself is unchanged). Falls back to the
+   * segmentation's own entries if the lookup fails.
+   */
+  function wordEntries(current: Session, text: string, fallback: TermDictionaryEntry[] = []) {
+    let entries = current.merged.get(text);
+    if (!entries) {
+      entries = current.client.lookup
+        .terms(text, { mode: 'merge' })
+        .then(({ entries: found }) => (found.length > 0 ? found : fallback))
+        .catch(() => fallback);
+      current.merged.set(text, entries);
+    }
+    return entries;
   }
 
   $effect(() => {
@@ -338,24 +358,26 @@
           />
           {@const token = view.wordIndex === null ? undefined : tokens[view.wordIndex]}
           {#if token}
-            <WordView
-              {client}
-              entries={token.entries}
-              surface={token.text}
-              {compact}
-              {glossaryStyle}
-              {controller}
-              noteContext={noteContextFor(client, box, token.text, token.range.start)}
-              {extraMarkers}
-              {noteStates}
-              onKanji={openKanji}
-              onQuery={openTerm}
-            />
+            {#await wordEntries(session, token.text, token.entries) then entries}
+              <WordView
+                {client}
+                {entries}
+                surface={token.text}
+                {compact}
+                {glossaryStyle}
+                {controller}
+                noteContext={noteContextFor(client, box, token.text, token.range.start)}
+                {extraMarkers}
+                {noteStates}
+                onKanji={openKanji}
+                onQuery={openTerm}
+              />
+            {/await}
           {:else}
             <p class="mt-2 text-[13px] text-[#666]">No match</p>
           {/if}
         {:else}
-          {#await client.lookup.terms(view.query) then { entries }}
+          {#await wordEntries(session, view.query) then entries}
             {#if entries.length > 0}
               <WordView
                 {client}

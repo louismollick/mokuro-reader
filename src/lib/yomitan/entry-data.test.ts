@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { TermDictionaryEntry } from 'yomitan-core';
 import {
+  alternateForms,
   distributeFurigana,
+  primaryHeadword,
   frequencyLabels,
   inflectionNames,
   primaryPitchPositions
@@ -46,6 +48,43 @@ function entry(partial: Partial<TermDictionaryEntry>): TermDictionaryEntry {
   return partial as TermDictionaryEntry;
 }
 
+const primaryOnly = [{ headwordIndex: 0, term: 'x', reading: 'x', sources: [{ isPrimary: true }] }];
+
+describe('primaryHeadword and alternateForms', () => {
+  // 言う merged with its variants, as lookup.terms(..., { mode: 'merge' }) returns it.
+  const merged = entry({
+    headwords: [
+      ['言う', 'いう', true],
+      ['言う', 'ゆう', true],
+      ['云う', 'いう', false],
+      ['云う', 'ゆう', false],
+      ['謂う', 'いう', false],
+      ['謂う', 'ゆう', false]
+    ].map(([term, reading, isPrimary], headwordIndex) => ({
+      term,
+      reading,
+      headwordIndex,
+      sources: [{ isPrimary }]
+    })) as never
+  });
+
+  it('takes the headword the lookup matched', () => {
+    expect(primaryHeadword(merged)).toMatchObject({ term: '言う', reading: 'いう' });
+    const secondPrimary = entry({
+      headwords: [
+        { term: 'a', sources: [{ isPrimary: false }] },
+        { term: 'b', sources: [{ isPrimary: true }] }
+      ] as never
+    });
+    expect(primaryHeadword(secondPrimary).term).toBe('b');
+  });
+
+  it('lists the other readings, then the other spellings, once each', () => {
+    expect(alternateForms(merged)).toEqual(['ゆう', '云う', '謂う']);
+    expect(alternateForms(entry({ headwords: primaryOnly as never }))).toEqual([]);
+  });
+});
+
 describe('primaryPitchPositions', () => {
   const pitch = (
     dictionaryIndex: number,
@@ -59,6 +98,7 @@ describe('primaryPitchPositions', () => {
 
   it('takes the first pitch dictionary for the first headword, deduplicated', () => {
     const e = entry({
+      headwords: primaryOnly as never,
       pronunciations: [pitch(3, 0, [1]), pitch(1, 1, [4]), pitch(2, 0, [0, 2, 0])] as never
     });
     expect(primaryPitchPositions(e)).toEqual([0, 2]);
@@ -66,7 +106,9 @@ describe('primaryPitchPositions', () => {
 
   it('ignores non-numeric patterns', () => {
     expect(
-      primaryPitchPositions(entry({ pronunciations: [pitch(0, 0, ['LHL'])] as never }))
+      primaryPitchPositions(
+        entry({ headwords: primaryOnly as never, pronunciations: [pitch(0, 0, ['LHL'])] as never })
+      )
     ).toEqual([]);
   });
 });
@@ -89,6 +131,7 @@ describe('frequencyLabels', () => {
 
   it('formats ranks and counts, one per dictionary in profile order', () => {
     const e = entry({
+      headwords: primaryOnly as never,
       frequencies: [
         freq(2, 'JPDB', 9123),
         freq(1, 'Jiten (Manga)', 1835),

@@ -57,10 +57,39 @@ export function distributeFurigana(term: string, reading: string): FuriganaSegme
   return segmentize(reading, groupTerm(term), 0) ?? [{ text: term, reading }];
 }
 
+/**
+ * The headword the lookup matched. In a merged entry (one per word, carrying every spelling and
+ * reading) that is the first one with a primary source, not the entry's other forms.
+ */
+export function primaryHeadword(
+  entry: TermDictionaryEntry
+): TermDictionaryEntry['headwords'][number] {
+  return (
+    entry.headwords.find(({ sources }) => sources.some(({ isPrimary }) => isPrimary)) ??
+    entry.headwords[0]
+  );
+}
+
+/**
+ * The entry's other readings of the primary spelling, then its other spellings, for one small
+ * line under the headword (`ゆう · 云う · 謂う`).
+ */
+export function alternateForms(entry: TermDictionaryEntry): string[] {
+  const primary = primaryHeadword(entry);
+  const readings = entry.headwords
+    .filter(({ term }) => term === primary.term)
+    .map(({ reading }) => reading);
+  const spellings = entry.headwords.map(({ term }) => term);
+  return [...new Set([...readings, ...spellings])].filter(
+    (form) => form !== primary.reading && form !== primary.term && form !== ''
+  );
+}
+
 /** The downstep positions of the first pitch dictionary that has any for the primary headword. */
 export function primaryPitchPositions(entry: TermDictionaryEntry): number[] {
+  const { headwordIndex: primaryIndex } = primaryHeadword(entry);
   const pronunciations = entry.pronunciations
-    .filter(({ headwordIndex }) => headwordIndex === 0)
+    .filter(({ headwordIndex }) => headwordIndex === primaryIndex)
     .sort((a, b) => a.dictionaryIndex - b.dictionaryIndex);
   for (const { pronunciations: pitches } of pronunciations) {
     const positions = pitches.flatMap((pitch) =>
@@ -83,8 +112,9 @@ export interface FrequencyLabel {
 /** One value per frequency dictionary for the primary headword, in profile order. */
 export function frequencyLabels(entry: TermDictionaryEntry): FrequencyLabel[] {
   const seen = new Set<string>();
+  const { headwordIndex: primaryIndex } = primaryHeadword(entry);
   return entry.frequencies
-    .filter(({ headwordIndex }) => headwordIndex === 0)
+    .filter(({ headwordIndex }) => headwordIndex === primaryIndex)
     .sort((a, b) => a.dictionaryIndex - b.dictionaryIndex)
     .flatMap((frequency) => {
       if (seen.has(frequency.dictionary)) return [];
