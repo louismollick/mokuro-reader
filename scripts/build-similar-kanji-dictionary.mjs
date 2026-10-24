@@ -2,20 +2,22 @@
  * Builds the "Similar Kanji" Yomitan kanji dictionary (static/dictionaries/similar-kanji.zip).
  * Similar Kanji = kanji that look like a given kanji and are easy to confuse with it.
  *
- * Usage: node scripts/build-similar-kanji-dictionary.mjs [kikuKanjiDb] [kanjiumLookalikes] [yenckenJson] [out]
+ * Usage: node scripts/build-similar-kanji-dictionary.mjs [kikuKanjiDb] [kanjiumLookalikes] [yenckenJson] [out] [kanjidicDir]
  *
  * Inputs are data only (parsed, never executed):
  *  - kikuKanjiDb: gzipped JSON, kanji -> tuple whose index 8 is the WaniKani visuallySimilar list
  *  - kanjiumLookalikes: TSV, "kanji<TAB>a,b,c"
  *  - yenckenJson: JSON, kanji -> [{ kan, score }] sorted by score desc (stroke edit distance)
+ *  - kanjidicDir: unzipped KANJIDIC Yomitan dictionary; its `freq` stat (newspaper rank) breaks
+ *    Yencken score ties, most common first, kanji without a rank last
  *
  * Merge per kanji: WaniKani, then Kanjium, then (only while under MIN_LIST) Yencken neighbors with
- * score >= YENCKEN_MIN_SCORE; deduped, self dropped, capped at MAX_LIST. Directionality is kept.
+ * score >= YENCKEN_MIN_SCORE (ties by frequency); deduped, self dropped, capped at MAX_LIST. Directionality is kept.
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { BlobWriter, TextReader, ZipWriter } from '@zip.js/zip.js';
 import { createMemoryStorage, createZipArchiveReader, importDictionaryArchive } from 'yomitan-core';
 
@@ -24,11 +26,12 @@ const MAX_LIST = 6;
 const YENCKEN_MIN_SCORE = 0.8;
 const WANIKANI_VISUALLY_SIMILAR_INDEX = 8;
 
-const [kikuPath, kanjiumPath, yenckenPath, outPath] = [
+const [kikuPath, kanjiumPath, yenckenPath, outPath, kanjidicDir] = [
   process.argv[2] ?? `${homedir()}/code/kiku/packages/note/.db/kiku_db_kanji_compact.json.gz`,
   process.argv[3] ?? '/tmp/kanji-dicts/kanjium/lookalikes.txt',
   process.argv[4] ?? '/tmp/kanji-dicts/yencken/s.json',
-  process.argv[5] ?? 'static/dictionaries/similar-kanji.zip'
+  process.argv[5] ?? 'static/dictionaries/similar-kanji.zip',
+  process.argv[6] ?? '/tmp/kanji-dicts/kanjidic'
 ];
 
 /** True for exactly one Unicode code point (a single kanji). */
@@ -54,11 +57,24 @@ for (const line of readFileSync(kanjiumPath, 'utf8').split(/\r?\n/)) {
   );
 }
 
+/** KANJIDIC newspaper frequency rank per kanji (1 = most common). */
+const frequencyRank = new Map();
+for (const file of readdirSync(kanjidicDir).filter((name) => /^kanji_bank_\d+\.json$/.test(name))) {
+  for (const [kanji, , , , , stats] of JSON.parse(readFileSync(join(kanjidicDir, file), 'utf8'))) {
+    const rank = Number(stats?.freq);
+    if (rank > 0) frequencyRank.set(kanji, rank);
+  }
+}
+const rankOf = (kanji) => frequencyRank.get(kanji) ?? Infinity;
+
 const yencken = new Map();
 for (const [kanji, neighbors] of Object.entries(JSON.parse(readFileSync(yenckenPath, 'utf8')))) {
   yencken.set(
     kanji,
-    neighbors.filter(({ score }) => score >= YENCKEN_MIN_SCORE).map(({ kan }) => kan)
+    neighbors
+      .filter(({ score }) => score >= YENCKEN_MIN_SCORE)
+      .sort((a, b) => b.score - a.score || rankOf(a.kan) - rankOf(b.kan))
+      .map(({ kan }) => kan)
   );
 }
 
