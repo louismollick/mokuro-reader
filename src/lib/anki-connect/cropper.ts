@@ -9,7 +9,7 @@ import type { Page, Block } from '$lib/types';
  * Used to give some padding around the text when cropping for Anki cards.
  */
 export function expandTextBoxBounds(
-  block: Block,
+  block: Pick<Block, 'box'>,
   page: { img_width: number; img_height: number },
   horizontalPct = 0.05,
   verticalPct = 0.02
