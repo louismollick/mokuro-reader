@@ -18,9 +18,12 @@ export function getContext2D(canvas: AnyCanvas): Context2D {
 
 /** Encodes the canvas. Browsers that cannot encode `type` return PNG instead; callers check `blob.type`. */
 export function canvasToBlob(canvas: AnyCanvas, type: string, quality: number): Promise<Blob> {
-  if (canvas instanceof OffscreenCanvas) return canvas.convertToBlob({ type, quality });
+  if (typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
+    return canvas.convertToBlob({ type, quality });
+  }
+  const element = canvas as HTMLCanvasElement;
   return new Promise((resolve, reject) =>
-    canvas.toBlob(
+    element.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error('Encoding failed'))),
       type,
       quality

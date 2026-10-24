@@ -24,7 +24,8 @@ type Sample = { img: string; box: [number, number, number, number]; W: number; H
 type Reference = { crop: [number, number, number, number] };
 
 const args = process.argv.slice(2);
-const [dir, modelPath = 'static/models/manga-panel-detector-yolo26n.onnx', perVolume = '7'] = args;
+const [dir, modelPath = 'src/lib/panel/assets/manga-panel-detector-yolo26n.onnx', perVolume = '7'] =
+  args;
 const volumes = ['dorohedoro', 'chainsaw', 'berserk'];
 
 function iou(a: Rect, b: Rect): number {

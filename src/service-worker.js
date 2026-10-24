@@ -6,10 +6,11 @@ const CACHE = `cache-${version}`;
 
 // Panel detector model and onnxruntime wasm are large and only needed once a user mines a card:
 // skip the install-time precache, and keep them in a separate cache that survives deploys.
-// Filled on first fetch. Not pruned: worker assets (the hashed wasm) are absent from `build`,
-// so a stale wasm from an old onnxruntime stays until site data is cleared.
+// Filled on first fetch. Both URLs are content-hashed by the build (worker `?url` imports), so new
+// weights or a new onnxruntime are new entries. Not pruned: worker assets are absent from `build`,
+// so superseded files stay until site data is cleared.
 const LARGE_ASSETS_CACHE = 'mokuro-large-assets-v1';
-const isLargeAsset = (path) => path.startsWith('/models/') || path.endsWith('.wasm');
+const isLargeAsset = (path) => path.endsWith('.onnx') || path.endsWith('.wasm');
 
 const ASSETS = [
   ...build, // the app itself

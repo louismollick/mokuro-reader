@@ -250,7 +250,8 @@ describe('WordView', () => {
     ]);
     const panelSource = {
       pageImage: new Blob(['page']),
-      textBox: { x1: 10, y1: 10, x2: 20, y2: 20 }
+      textBox: { x1: 10, y1: 10, x2: 20, y2: 20 },
+      pageSize: { width: 100, height: 150 }
     };
     const onAdjust = vi.fn();
     const view = render(WordView, {
@@ -264,7 +265,9 @@ describe('WordView', () => {
     await fireEvent.click(await view.findByRole('button', { name: 'Add to Anki' }));
 
     await waitFor(() => expect(view.getByRole('img', { name: 'Added to Anki' })).toBeTruthy());
-    expect(mocks.cropPanel).toHaveBeenCalledWith(panelSource.pageImage, panelSource.textBox);
+    expect(mocks.cropPanel).toHaveBeenCalledWith(panelSource.pageImage, panelSource.textBox, {
+      pageSize: panelSource.pageSize
+    });
     expect(addNote).toHaveBeenCalledWith(
       entry,
       0,

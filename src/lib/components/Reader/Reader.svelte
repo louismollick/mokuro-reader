@@ -86,6 +86,7 @@
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
+  import { panelSourceFor } from '$lib/yomitan/mining';
   import type LookupSheetComponent from '$lib/components/Lookup/LookupSheet.svelte';
   import type { LookupRequest } from '$lib/yomitan/lookup-request';
   import type { TextBoxTap } from '$lib/reader/input/text-box-tap';
@@ -1227,15 +1228,14 @@
     const lines = block?.lines.map(processLine);
     if (!lines?.some((line) => line.trim())) return;
 
-    // The original page image, not the downscaled render, for the Panel Crop.
-    const pageImage = volumeData?.files?.[ocrPage.img_path];
-    const [x1, y1, x2, y2] = block.box;
     lookupRequest = {
       ...tap,
       id: ++lookupCount,
       lines,
       boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`,
-      panel: pageImage ? { pageImage, textBox: { x1, y1, x2, y2 } } : null
+      panel: volumeData?.files
+        ? panelSourceFor(volumeData.files, pages, pageIndex, blockIndex)
+        : null
     };
     if (!LookupSheet) {
       import('$lib/components/Lookup/LookupSheet.svelte').then((module) => {

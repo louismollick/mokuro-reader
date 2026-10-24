@@ -2,13 +2,10 @@
  * Manga panel detection (main-thread side). The first call spawns a worker, which loads
  * onnxruntime-web and the model; later calls reuse them. See panel-worker.ts.
  */
-import { base } from '$app/paths';
 import { createCanvas, getContext2D } from './canvas';
 import { computeLetterbox, INPUT_SIZE, PAD_VALUE, type Letterbox, type PanelBox } from './yolo';
 
 export type { PanelBox, Rect } from './yolo';
-
-export const MODEL_PATH = '/models/manga-panel-detector-yolo26n.onnx';
 
 export type DetectRequest = {
   warm?: undefined;
@@ -16,19 +13,14 @@ export type DetectRequest = {
   /** RGBA pixels of the letterboxed 640x640 input. */
   rgba: Uint8ClampedArray;
   letterbox: Letterbox;
-  modelUrl: string;
 };
 /** Asks the worker to load the model and run it once on a blank input. */
-export type WarmRequest = { warm: true; modelUrl: string };
+export type WarmRequest = { warm: true };
 export type DetectResponse = { id: number; panels?: PanelBox[]; error?: string };
 
 let worker: Worker | undefined;
 let nextId = 0;
 const pending = new Map<number, { resolve: (p: PanelBox[]) => void; reject: (e: Error) => void }>();
-
-function modelUrl(): string {
-  return new URL(`${base}${MODEL_PATH}`, self.location.origin).href;
-}
 
 function getWorker(): Worker {
   if (worker) return worker;
@@ -77,8 +69,7 @@ export async function detectPanels(image: ImageBitmap | Blob): Promise<PanelBox[
     const request: DetectRequest = {
       id,
       rgba,
-      letterbox,
-      modelUrl: modelUrl()
+      letterbox
     };
     getWorker().postMessage(request, [rgba.buffer]);
     return await result;
@@ -97,7 +88,7 @@ export function warmUpPanelDetector(): void {
   if (warmed) return;
   warmed = true;
   const start = () => {
-    const request: WarmRequest = { warm: true, modelUrl: modelUrl() };
+    const request: WarmRequest = { warm: true };
     getWorker().postMessage(request);
   };
   if (typeof requestIdleCallback === 'function') requestIdleCallback(start, { timeout: 2000 });

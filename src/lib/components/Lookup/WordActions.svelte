@@ -127,14 +127,15 @@
       const cardFormatIndex = ankiTarget?.cardFormatIndex ?? 0;
       // A card format without `{screenshot}` has no use for a Panel Crop.
       const wantsPanel = profileScreenshotFields(client, cardFormatIndex).length > 0;
-      const { panel, warnings } = await mineWord(
+      const { panel, warnings } = await mineWord({
         controller,
-        target,
+        entry: target,
         cardFormatIndex,
-        noteContext,
+        context: noteContext,
         extraMarkers,
-        wantsPanel ? panelSource : null
-      );
+        source: wantsPanel ? panelSource : null,
+        screenshots: minedPanels.screenshots
+      });
       noteStates.markAdded(target);
       if (panel) minedPanels.set(target, panel);
       void syncAnkiWeb();

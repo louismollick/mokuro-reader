@@ -180,8 +180,9 @@
     try {
       const fields = profileScreenshotFields(current.client, panel.cardFormatIndex);
       const image = await cropRect(panel.source.pageImage, rect);
-      if (await replacePanel(panel.noteId, fields, image)) {
-        current.minedPanels.set(entry, { ...panel, rect, image });
+      const fileName = await replacePanel(panel.noteId, fields, panel.fileName, image);
+      if (fileName) {
+        current.minedPanels.set(entry, { ...panel, fileName, rect, image });
         showSnackbar('Updated the Panel Crop.');
         return;
       }
@@ -220,8 +221,11 @@
   let controller = $derived.by(() => {
     void ankiTransportKey;
     if (!ankiEnabled || !session) return null;
-    return createDisplayController(session.client, {
-      anki: createMokuroAnkiTransport(volumeMetadata)
+    const { client, minedPanels } = session;
+    return createDisplayController(client, {
+      anki: createMokuroAnkiTransport(volumeMetadata, (fileName, source) =>
+        minedPanels.screenshots.record(fileName, source)
+      )
     });
   });
   let extraMarkers = $derived({

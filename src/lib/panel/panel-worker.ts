@@ -4,6 +4,8 @@
  */
 import * as ort from 'onnxruntime-web/wasm';
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
+// Content-hashed by the build, so new weights get a new URL (and a fresh service worker cache entry).
+import modelUrl from './assets/manga-panel-detector-yolo26n.onnx?url';
 import type { DetectRequest, DetectResponse, WarmRequest } from './detect-panels';
 import { decodePanels, INPUT_SIZE, rgbaToTensor } from './yolo';
 
@@ -13,8 +15,8 @@ ort.env.wasm.wasmPaths = { wasm: wasmUrl };
 let session: Promise<ort.InferenceSession> | undefined;
 
 /** Runs the model on a blank input once, so the first real page doesn't pay for kernel setup. */
-async function warmUp(modelUrl: string) {
-  const s = await getSession(modelUrl);
+async function warmUp() {
+  const s = await getSession();
   const blank = new ort.Tensor('float32', new Float32Array(3 * INPUT_SIZE * INPUT_SIZE), [
     1,
     3,
@@ -24,7 +26,7 @@ async function warmUp(modelUrl: string) {
   await s.run({ [s.inputNames[0]]: blank });
 }
 
-function getSession(modelUrl: string): Promise<ort.InferenceSession> {
+function getSession(): Promise<ort.InferenceSession> {
   session ??= ort.InferenceSession.create(modelUrl, { executionProviders: ['wasm'] });
   // Let the next request retry if loading failed (e.g. offline before the first cache fill).
   session.catch(() => (session = undefined));
@@ -33,11 +35,11 @@ function getSession(modelUrl: string): Promise<ort.InferenceSession> {
 
 async function handle(data: DetectRequest | WarmRequest) {
   if (data.warm) {
-    await warmUp(data.modelUrl).catch(() => {});
+    await warmUp().catch(() => {});
     return;
   }
   try {
-    const s = await getSession(data.modelUrl);
+    const s = await getSession();
     const input = new ort.Tensor('float32', rgbaToTensor(data.rgba), [
       1,
       3,

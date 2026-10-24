@@ -9,6 +9,11 @@ export type CropOptions = {
   /** Default image/webp; falls back to JPEG where the browser cannot encode it (iOS Safari). */
   type?: 'image/webp' | 'image/jpeg';
   quality?: number;
+  /**
+   * The page size `textBox` is measured in (the OCR's `img_width`/`img_height`). The decoded image
+   * can be larger or smaller, so the box is scaled into its pixels. Default: the image's own size.
+   */
+  pageSize?: { width: number; height: number };
 };
 
 /** Cuts `rect` (page pixels) out of a decoded page and encodes it. */
@@ -48,10 +53,22 @@ export async function cropRect(
   }
 }
 
+/** `rect` from a page of `pageSize` scaled into the pixels of `bitmap`. */
+function scaleToBitmap(
+  rect: Rect,
+  pageSize: CropOptions['pageSize'],
+  bitmap: { width: number; height: number }
+): Rect {
+  if (!pageSize) return rect;
+  const sx = bitmap.width / pageSize.width;
+  const sy = bitmap.height / pageSize.height;
+  return { x1: rect.x1 * sx, y1: rect.y1 * sy, x2: rect.x2 * sx, y2: rect.y2 * sy };
+}
+
 /**
- * Crops the panel holding `textBox` out of a page image, in page pixels. If detection fails
+ * Crops the panel holding `textBox` out of a page image. If detection fails
  * (model unavailable offline, etc.) it falls back to the padded text box.
- * Returns the encoded image and the source rect that was cut.
+ * Returns the encoded image and the source rect that was cut, in the image's own pixels.
  */
 export async function cropPanel(
   pageImage: Blob,
@@ -66,7 +83,7 @@ export async function cropPanel(
     } catch (err) {
       console.warn('Panel detection failed, using padded text box', err);
     }
-    const rect = choosePanelCrop(panels, textBox, bitmap);
+    const rect = choosePanelCrop(panels, scaleToBitmap(textBox, options.pageSize, bitmap), bitmap);
     return { blob: await cutRect(bitmap, rect, options), rect };
   } finally {
     bitmap.close();
