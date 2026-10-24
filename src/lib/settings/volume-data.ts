@@ -1,8 +1,11 @@
 import { browser } from '$app/environment';
-import { derived, writable, readable } from 'svelte/store';
+import { derived, get, writable, readable } from 'svelte/store';
 import { settings as globalSettings } from './settings';
 import { db } from '$lib/catalog/db';
+import type { VolumeMetadata } from '$lib/types';
 import { getEffectiveReadingTime } from '$lib/util/reading-speed';
+import { hasFreshPassSince } from '$lib/util/volume-helpers';
+import { SERIES_SECTION_KEY } from './series-data';
 
 // Deep equality check for settings objects
 function settingsEqual(
@@ -28,6 +31,8 @@ export type VolumeSettings = {
   rightToLeft?: boolean;
   hasCover?: boolean;
   spreadBreakpoints?: number[];
+  /** Displayed OCR layer id (`volume_ocr_layers.layer_id`); absent = primary. */
+  ocrLayer?: string;
 };
 
 export type VolumeSettingsKey = keyof VolumeSettings;
@@ -41,11 +46,45 @@ export type AggregateSession = {
   charsRead: number;
 };
 
+// One archived read pass, appended by "restart series". `pages`/`chars` are the
+// values at the moment of the restart; `completed` says whether that pass finished.
+export type ArchivedRead = {
+  at: number;
+  pages: number;
+  chars: number;
+  completed: boolean;
+  /**
+   * The volume's `completedAt` at the moment of the restart, when it had one.
+   *
+   * `at` is when RESTART WAS PRESSED, which is not when the pass finished.
+   * Dating a goal period from `at` credits the restart month: finish a
+   * ten-volume series in March, restart it in December, and December collects
+   * ten completions that never happened while March shows none. So the real
+   * date rides along, and anything counting completions per period reads this,
+   * never `at`.
+   */
+  completedAt?: string;
+};
+
+function isArchivedRead(value: unknown): value is ArchivedRead {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.at === 'number' &&
+    typeof v.pages === 'number' &&
+    typeof v.chars === 'number' &&
+    typeof v.completed === 'boolean' &&
+    (v.completedAt === undefined || typeof v.completedAt === 'string')
+  );
+}
+
 type Progress = Record<string, number> | undefined;
 type VolumeDataJSON = {
   progress?: number;
   chars?: number;
   completed?: boolean;
+  /** ISO stamp of the moment this volume was first finished. See the class field. */
+  completedAt?: string;
   timeReadInMinutes?: number;
   settings?: VolumeSettings;
   lastProgressUpdate?: string;
@@ -53,6 +92,8 @@ type VolumeDataJSON = {
   recentPageTurns?: PageTurn[];
   // Aggregate session data for reading speed calculation
   sessions?: AggregateSession[];
+  // Archived read passes (restart series)
+  archivedReads?: ArchivedRead[];
   // Volume metadata for self-describing sync data
   series_uuid?: string;
   series_title?: string;
@@ -66,11 +107,26 @@ export class VolumeData implements VolumeDataJSON {
   progress: number;
   chars: number;
   completed: boolean;
+  /**
+   * WHEN this volume was finished, as opposed to `completed`, which only says
+   * THAT it was. Reading goals count completions into calendar periods, so the
+   * date has to be durable per-volume state that syncs — it cannot be
+   * re-derived, because `lastProgressUpdate` moves on every page turn and a
+   * single page flipped through an old volume would re-date a two-year-old
+   * completion to today.
+   *
+   * Stamped once, at the false->true edge in `updateProgress`, and cleared only
+   * by the three paths that genuinely un-read a volume. Absent means "finished,
+   * but before this field existed, and no evidence survived to date it" — never
+   * "not finished", which is what `completed` and the page count are for.
+   */
+  completedAt?: string;
   timeReadInMinutes: number;
   settings: VolumeSettings;
   lastProgressUpdate: string;
   recentPageTurns: PageTurn[];
   sessions: AggregateSession[];
+  archivedReads: ArchivedRead[];
   series_uuid?: string;
   series_title?: string;
   volume_title?: string;
@@ -81,6 +137,13 @@ export class VolumeData implements VolumeDataJSON {
     this.progress = typeof data.progress === 'number' ? data.progress : 0;
     this.chars = typeof data.chars === 'number' ? data.chars : 0;
     this.completed = !!data.completed;
+    // Untrusted (cloud JSON, hand-edited localStorage): keep only a parseable
+    // ISO stamp. A junk value becomes absent rather than poisoning a goal
+    // period with an Invalid Date.
+    this.completedAt =
+      typeof data.completedAt === 'string' && !Number.isNaN(Date.parse(data.completedAt))
+        ? data.completedAt
+        : undefined;
     this.timeReadInMinutes =
       typeof data.timeReadInMinutes === 'number' ? data.timeReadInMinutes : 0;
     this.lastProgressUpdate = data.lastProgressUpdate || new Date(0).toISOString();
@@ -88,6 +151,9 @@ export class VolumeData implements VolumeDataJSON {
     // Session tracking fields
     this.recentPageTurns = data.recentPageTurns || [];
     this.sessions = data.sessions || [];
+    this.archivedReads = Array.isArray(data.archivedReads)
+      ? data.archivedReads.filter(isArchivedRead)
+      : [];
 
     // Volume metadata (optional, for self-describing sync data)
     this.series_uuid = data.series_uuid;
@@ -111,6 +177,10 @@ export class VolumeData implements VolumeDataJSON {
     if (typeof data.settings?.hasCover === 'boolean') {
       this.settings.hasCover = data.settings.hasCover;
     }
+
+    if (typeof data.settings?.ocrLayer === 'string' && data.settings.ocrLayer) {
+      this.settings.ocrLayer = data.settings.ocrLayer;
+    }
   }
 
   static fromJSON(json: any): VolumeData {
@@ -131,6 +201,7 @@ export class VolumeData implements VolumeDataJSON {
     if (this.progress > 0) result.progress = this.progress;
     if (this.chars > 0) result.chars = this.chars;
     if (this.completed) result.completed = this.completed;
+    if (this.completedAt) result.completedAt = this.completedAt;
     if (this.timeReadInMinutes > 0) result.timeReadInMinutes = this.timeReadInMinutes;
 
     // Only include lastProgressUpdate if it's not epoch
@@ -148,6 +219,11 @@ export class VolumeData implements VolumeDataJSON {
     if (typeof this.settings.hasCover === 'boolean') {
       syncableSettings.hasCover = this.settings.hasCover;
     }
+    // The displayed OCR layer follows the volume across devices like the
+    // other volume facts; a device without that layer falls back to primary.
+    if (typeof this.settings.ocrLayer === 'string' && this.settings.ocrLayer) {
+      syncableSettings.ocrLayer = this.settings.ocrLayer;
+    }
 
     if (Object.keys(syncableSettings).length > 0) {
       result.settings = syncableSettings;
@@ -161,6 +237,11 @@ export class VolumeData implements VolumeDataJSON {
     // Only include sessions if there are any
     if (this.sessions.length > 0) {
       result.sessions = this.sessions;
+    }
+
+    // Archived read passes (restart series) — sync with the volume
+    if (this.archivedReads.length > 0) {
+      result.archivedReads = this.archivedReads;
     }
 
     // Include volume metadata if present (for self-describing sync data)
@@ -200,8 +281,10 @@ export function parseVolumesFromJson(storedData: string): Volumes {
     const parsed = JSON.parse(storedData);
     return Object.fromEntries(
       Object.entries(parsed)
-        // Filter out entries with empty/invalid volume IDs (bug cleanup)
-        .filter(([key]) => key && key.length > 0)
+        // Filter out entries with empty/invalid volume IDs (bug cleanup), and the
+        // reserved `series` section — series-level reading state shares this file
+        // but is not a volume (see `$lib/settings/series-data`).
+        .filter(([key]) => key && key.length > 0 && key !== SERIES_SECTION_KEY)
         .map(([key, value]) => [key, VolumeData.fromJSON(value)])
     );
   } catch {
@@ -279,15 +362,65 @@ export function updateVolumeSeriesTitle(volumeUuid: string, newSeriesTitle: stri
 }
 
 /**
+ * Is this reading record missing the metadata every stats surface joins on?
+ *
+ * ONE definition, exported, because two copies of it drifted into being: this
+ * module used it to decide what to enrich, and `ReadingSpeedView` used its own
+ * transcription of it to decide what to OFFER FOR DELETION. A predicate that
+ * gates a destructive action must not be a copy of the one that gates the
+ * repair — the two have to agree by construction.
+ *
+ * WHAT IS DELIBERATELY NOT HERE. Both copies used to end in
+ * `volume_title.startsWith('Volume ')`. The intent was to catch
+ * `processVolumeSpeedData`'s display placeholder (`Volume <8 hex chars>...`),
+ * but that placeholder is never written back to a reading record — it exists
+ * only inside the `VolumeSpeedData` row it is rendered from. What the clause
+ * actually matched was real data: "Volume 1", "Volume 3" and friends are
+ * ordinary mokuro volume titles, so any record carrying one was reported as an
+ * orphan forever, even with a perfect, fully-populated row behind it — and on
+ * this page that meant it was offered up for deletion.
+ */
+export function isOrphanedVolumeData(
+  volumeData: Pick<VolumeData, 'series_uuid' | 'series_title' | 'volume_title'> | undefined | null
+): boolean {
+  if (!volumeData) return false;
+  return (
+    !volumeData.series_uuid ||
+    volumeData.series_uuid === 'missing-series-info' ||
+    !volumeData.series_title ||
+    volumeData.series_title === '[Missing Series Info]' ||
+    !volumeData.volume_title
+  );
+}
+
+/**
  * Enriches ALL orphaned volumes (those lacking metadata) from the catalog
  * This is more aggressive than lazy enrichment and runs proactively
+ *
+ * READS ONLY THE ORPHANS' ROWS. This used to `toArray()` the whole `volumes`
+ * table to build a lookup for the handful of ids it cares about, deserializing
+ * every installed volume's thumbnail blob on the way (the exact shape of the
+ * 437 MB-per-read cover regression). It is keyed by `volume_uuid`, so a
+ * `bulkGet` of the orphan ids answers the same question, and a store with no
+ * orphans in it touches IndexedDB not at all — which is what makes it cheap
+ * enough to run again after `materializeHistoryRows` has minted new rows.
  */
 export async function enrichAllOrphanedVolumes() {
   if (!browser) return;
 
   try {
-    const catalog = await db.volumes.toArray();
-    const catalogMap = new Map(catalog.map((v) => [v.volume_uuid, v]));
+    const snapshot = get(_volumesInternal);
+    const orphanIds = Object.keys(snapshot).filter(
+      (id) => !snapshot[id].deletedOn && isOrphanedVolumeData(snapshot[id])
+    );
+    if (orphanIds.length === 0) return;
+
+    const rows = await db.volumes.bulkGet(orphanIds);
+    const catalogMap = new Map<string, VolumeMetadata>();
+    rows.forEach((row) => {
+      if (row) catalogMap.set(row.volume_uuid, row);
+    });
+    if (catalogMap.size === 0) return;
 
     _volumesInternal.update((prev) => {
       const updated = { ...prev };
@@ -296,27 +429,17 @@ export async function enrichAllOrphanedVolumes() {
       Object.entries(prev).forEach(([volumeId, volumeData]) => {
         // Skip deleted volumes (tombstones)
         if (volumeData.deletedOn) return;
+        if (!isOrphanedVolumeData(volumeData)) return;
 
-        // Check if volume lacks metadata
-        const needsEnrichment =
-          !volumeData.series_uuid ||
-          volumeData.series_uuid === 'missing-series-info' ||
-          !volumeData.series_title ||
-          volumeData.series_title === '[Missing Series Info]' ||
-          !volumeData.volume_title ||
-          volumeData.volume_title.startsWith('Volume ');
-
-        if (needsEnrichment) {
-          const catalogInfo = catalogMap.get(volumeId);
-          if (catalogInfo) {
-            updated[volumeId] = new VolumeData({
-              ...volumeData,
-              series_uuid: catalogInfo.series_uuid,
-              series_title: catalogInfo.series_title,
-              volume_title: catalogInfo.volume_title
-            });
-            enrichedCount++;
-          }
+        const catalogInfo = catalogMap.get(volumeId);
+        if (catalogInfo) {
+          updated[volumeId] = new VolumeData({
+            ...volumeData,
+            series_uuid: catalogInfo.series_uuid,
+            series_title: catalogInfo.series_title,
+            volume_title: catalogInfo.volume_title
+          });
+          enrichedCount++;
         }
       });
 
@@ -364,7 +487,13 @@ export function deleteVolume(volume: string) {
     const existing = prev[volume];
     if (!existing) return prev; // Already gone or never existed
 
-    // Create tombstone with deletion timestamp
+    // Create tombstone with deletion timestamp.
+    //
+    // Deliberately WITHOUT `completedAt`: the tombstone is the user saying
+    // "forget this volume's stats", and it syncs. Carrying a completion date on
+    // it would resurrect the volume into every device's goal counts forever.
+    // Past periods keep their number through the closed-period goal snapshots,
+    // which freeze `completed` per period. Do not "fix" this by adding it.
     const tombstone = new VolumeData({
       deletedOn: new Date().toISOString(),
       // Keep metadata for sync identification
@@ -429,15 +558,68 @@ export function clearOrphanedVolumeData(volumeIds: string[]) {
   });
 }
 
+type CompletionListener = (volumeUuid: string) => void;
+const completionListeners = new Set<CompletionListener>();
+
+/**
+ * Called when a volume's `completed` flips false → true (via updateProgress or
+ * markVolumeAsComplete). Returns an unregister function.
+ */
+export function registerCompletionListener(fn: CompletionListener): () => void {
+  completionListeners.add(fn);
+  return () => {
+    completionListeners.delete(fn);
+  };
+}
+
+function notifyCompletion(volumeUuid: string) {
+  for (const fn of completionListeners) {
+    try {
+      fn(volumeUuid);
+    } catch (error) {
+      console.warn('[volume-data] completion listener failed:', error);
+    }
+  }
+}
+
+/**
+ * Has the reader started a fresh pass since this volume was last finished?
+ *
+ * The `completed` flag alone is a poor signal: it falls on any page below the
+ * last-page window, on the reader-settings page input and on `toggleHasCover`,
+ * so a bare false->true edge re-dated a volume finished in 2025 the moment
+ * somebody paged back two pages and forward one in 2026 — and that date decides
+ * which year's goal the volume counts toward.
+ *
+ * `hasFreshPassSince` is shared with the goals module's partial-credit rule on
+ * purpose; see its doc comment for why the two must answer alike.
+ */
+function startedFreshPassSince(
+  volumeData: VolumeData,
+  sinceIso: string | undefined,
+  completingPage: number
+): boolean {
+  if (!sinceIso) return true; // never finished before — this IS the first pass
+  const since = Date.parse(sinceIso);
+  if (Number.isNaN(since)) return true;
+
+  return hasFreshPassSince(volumeData.recentPageTurns, since, completingPage);
+}
+
 export function updateProgress(
   volume: string,
   progress: number,
   chars?: number,
   completed = false
 ) {
+  let becameCompleted = false;
   _volumesInternal.update((prev) => {
     const currentVolume = prev[volume] || new VolumeData();
+    becameCompleted = completed && !currentVolume.completed;
     const now = Date.now();
+    // One stamp shared by the page turn and the completion, so a backfill can
+    // rely on them lining up.
+    const nowIso = new Date(now).toISOString();
 
     // Add new turn with cumulative character count
     // Page turns accumulate indefinitely - idle gaps are filtered during time calculation
@@ -475,11 +657,41 @@ export function updateProgress(
         progress,
         chars: chars ?? currentVolume.chars,
         completed,
-        lastProgressUpdate: new Date().toISOString(),
+        /*
+         * Re-dated only for a GENUINE second reading — the flag rising again
+         * AND a page turn back at the start since the last completion.
+         *
+         * The bare false->true edge is not enough. The flag falls on any page
+         * below the last-page window, on the reader-settings page input and on
+         * `toggleHasCover`, so "tap back twice, forward once" in a volume
+         * finished last year re-dated it into this year's goal — a book the
+         * user did not read this year inflating the count, and the original
+         * date gone from every device after the next sync. Write-once was no
+         * better in the other direction: a real cover-to-cover re-read kept its
+         * old date and counted for nothing.
+         *
+         * `completed: false` NEVER clears it here. `updateProgress`'s
+         * `completed` parameter defaults to false and two callers pass only
+         * three arguments — `toggleHasCover` in Reader.svelte and the
+         * page-number input in ReaderSettings.svelte — so a false here
+         * frequently means "the caller said nothing", not "the user un-read
+         * this". The three paths that genuinely un-read a volume clear it.
+         */
+        completedAt: completed
+          ? becameCompleted &&
+            startedFreshPassSince(currentVolume, currentVolume.completedAt, progress)
+            ? nowIso
+            : (currentVolume.completedAt ?? nowIso)
+          : currentVolume.completedAt,
+        lastProgressUpdate: nowIso,
         recentPageTurns
       })
     };
   });
+
+  if (becameCompleted) {
+    notifyCompletion(volume);
+  }
 }
 
 export function markVolumeAsComplete(volumeUuid: string, pageCount: number, totalChars?: number) {
@@ -487,7 +699,59 @@ export function markVolumeAsComplete(volumeUuid: string, pageCount: number, tota
 }
 
 export function markVolumeAsUnread(volumeUuid: string) {
+  // `updateProgress` deliberately preserves `completedAt` on a false flag (see
+  // the comment there). This is the explicit un-read, so it clears the date —
+  // and rides the fresh `lastProgressUpdate` that call just wrote, so the
+  // clear wins the next merge.
   updateProgress(volumeUuid, 0, 0, false);
+  _volumesInternal.update((prev) => {
+    const current = prev[volumeUuid];
+    if (!current?.completedAt) return prev;
+    return {
+      ...prev,
+      [volumeUuid]: new VolumeData({ ...current, completedAt: undefined })
+    };
+  });
+}
+
+/**
+ * "Restart series": archive each volume's current read (progress/chars/completed)
+ * onto `archivedReads`, then reset it to the start. Reading history
+ * (recentPageTurns, sessions, timeReadInMinutes) is untouched. Volumes with no
+ * progress are skipped; unknown UUIDs are not created.
+ */
+export function archiveAndResetVolumes(volumeUuids: string[]) {
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
+  _volumesInternal.update((prev) => {
+    const updated = { ...prev };
+    for (const uuid of volumeUuids) {
+      const existing = updated[uuid];
+      if (!existing || existing.deletedOn) continue;
+      if (existing.progress <= 0 && !existing.completed) continue;
+      updated[uuid] = new VolumeData({
+        ...existing,
+        archivedReads: [
+          ...existing.archivedReads,
+          {
+            at: now,
+            pages: existing.progress,
+            chars: existing.chars,
+            completed: existing.completed,
+            // The pass keeps the date it was actually finished on, so a period
+            // that already counted it goes on counting it after the restart.
+            ...(existing.completedAt ? { completedAt: existing.completedAt } : {})
+          }
+        ],
+        progress: 0,
+        chars: 0,
+        completed: false,
+        completedAt: undefined,
+        lastProgressUpdate: nowIso
+      });
+    }
+    return updated;
+  });
 }
 
 export function startCount(volume: string) {
@@ -597,6 +861,25 @@ export function updateVolumeSetting(volume: string, key: VolumeSettingsKey, valu
   // (rightToLeft/hasCover flow into its props).
 }
 
+/**
+ * Calculate pages read within a specific time period
+ * @param pageTurns - Array of page turn data [timestamp_ms, page_number, char_count]
+ * @param periodStartTimestamp - Timestamp (ms) when the period started
+ * @returns Number of unique pages read since the period started
+ */
+export function calculatePagesReadInPeriod(
+  pageTurns: PageTurn[],
+  periodStartTimestamp: number
+): number {
+  // Filter page turns to only those since the period started
+  const recentTurns = pageTurns.filter(([timestamp]) => timestamp >= periodStartTimestamp);
+
+  // Count unique pages (use Set to deduplicate)
+  const uniquePages = new Set(recentTurns.map(([, pageNumber]) => pageNumber));
+
+  return uniquePages.size;
+}
+
 export const totalStats = derived([volumes, globalSettings], ([$volumes, $settings]) => {
   if ($volumes) {
     const idleTimeoutMs = $settings.inactivityTimeoutMinutes * 60 * 1000;
@@ -610,6 +893,11 @@ export const totalStats = derived([volumes, globalSettings], ([$volumes, $settin
         stats.pagesRead += volumeData.progress;
         stats.minutesRead += getEffectiveReadingTime(volumeData, idleTimeoutMs);
         stats.charsRead += volumeData.chars;
+        // Lifetime totals keep every archived pass (restart series never lowers them)
+        for (const read of volumeData.archivedReads) {
+          stats.pagesRead += read.pages;
+          stats.charsRead += read.chars;
+        }
 
         return stats;
       },

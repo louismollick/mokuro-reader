@@ -9,7 +9,6 @@ vi.mock('$lib/settings', () => {
     boldFont: false,
     displayOCR: true,
     textBoxBorders: false,
-    textEditable: false,
     ankiConnectSettings: {
       triggerMethod: 'neither',
       tags: '',

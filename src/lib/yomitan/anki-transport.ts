@@ -5,14 +5,15 @@
  * note-building AnkiConnect calls. Wiring mokuro's own `fetch` in means URL changes, CORS retries and
  * self-signed setups keep working exactly as they do for mokuro's other Anki features.
  *
- * `addNote` first creates the note's deck and sanitizes tags. Capabilities are trimmed for
+ * `addNote` first creates the note's deck, and replaces the note's tags with mokuro's one global
+ * tag template (`ankiConnectSettings.tags`, shared with Capture) resolved for the open volume. Capabilities are trimmed for
  * AnkiConnect Android (`isAndroidMode`), which does not implement `canAddNotesWithErrorDetail`,
  * `notesInfo` or `guiBrowseNotes`.
  */
 import { get } from 'svelte/store';
 import type { AnkiTransport } from 'yomitan-core';
 import { createAnkiConnectTransport } from 'yomitan-core';
-import { isAndroidMode } from '$lib/anki-connect';
+import { isAndroidMode, resolveDynamicTags, type VolumeMetadata } from '$lib/anki-connect';
 import { settings } from '$lib/settings';
 import { ankiRequestBody } from '$lib/anki-connect/request';
 
@@ -73,22 +74,26 @@ async function createDeck(mokuroFetch: typeof fetch, url: string, deck: string) 
   await response.json().catch(() => null);
 }
 
-/** Anki tags cannot contain spaces (the old `resolveDynamicTags` replaced them the same way). */
-function sanitizeTags(tags: string[]): string[] {
-  return tags.map((tag) => tag.trim().replace(/\s+/g, '_')).filter((tag) => tag.length > 0);
+/** The global tag template with `{series}`/`{volume}` filled in, as a list of Anki tags. */
+function resolveNoteTags(template: string, volumeMetadata: VolumeMetadata): string[] {
+  return resolveDynamicTags(template, volumeMetadata)
+    .split(/\s+/)
+    .map((tag) => tag.trim().replace(/\s+/g, '_'))
+    .filter((tag) => tag.length > 0);
 }
 
 /**
  * Builds mokuro's AnkiTransport for the current AnkiConnect URL and mode. Call it fresh whenever
  * the URL setting or Android override changes; it is cheap (no connection is opened eagerly).
+ * `volumeMetadata` (the open volume's titles) fills the tag template's `{series}` and `{volume}`.
  */
-export function createMokuroAnkiTransport(): AnkiTransport {
+export function createMokuroAnkiTransport(volumeMetadata: VolumeMetadata = {}): AnkiTransport {
   const url = get(settings).ankiConnectSettings.url || DEFAULT_URL;
   const mokuroFetch = createMokuroFetch(url);
   const base = createAnkiConnectTransport({
     server: url,
     apiKey: get(settings).ankiConnectSettings.apiKey || null,
-    fetch: mokuroFetch as never
+    fetch: mokuroFetch
   });
 
   const transport: AnkiTransport = {
@@ -97,7 +102,8 @@ export function createMokuroAnkiTransport(): AnkiTransport {
       if (note.deckName) {
         await createDeck(mokuroFetch, url, note.deckName);
       }
-      return await base.addNote({ ...note, tags: sanitizeTags(note.tags ?? []) });
+      const tags = resolveNoteTags(get(settings).ankiConnectSettings.tags, volumeMetadata);
+      return await base.addNote({ ...note, tags });
     },
     updateNoteFields: (note) => base.updateNoteFields(note),
     canAddNotes: (notes) => base.canAddNotes(notes),

@@ -5,8 +5,8 @@ import { RECOMMENDED_DICTIONARIES } from '$lib/yomitan/recommended-dictionaries'
 
 const settingsMocks = vi.hoisted(() => ({
   settingsStore: {
-    subscribe: (run: (value: { yomitanPopupOnTextBoxTap: boolean }) => void) => {
-      run({ yomitanPopupOnTextBoxTap: false });
+    subscribe: (run: (value: object) => void) => {
+      run({ yomitanPopupOnTextBoxTap: false, ankiConnectSettings: { connectionData: null } });
       return () => {};
     }
   },
@@ -34,6 +34,12 @@ const clientMock = vi.hoisted(() => ({
 vi.mock('$lib/settings', () => ({
   settings: settingsMocks.settingsStore,
   updateSetting: settingsMocks.updateSetting
+}));
+
+vi.mock('$lib/anki-connect', () => ({
+  getDeckNames: vi.fn(),
+  getModelNames: vi.fn(),
+  getModelFieldNames: vi.fn()
 }));
 
 vi.mock('$lib/yomitan/client', () => ({

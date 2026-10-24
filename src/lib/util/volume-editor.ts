@@ -3,6 +3,7 @@
  */
 
 import { db } from '$lib/catalog/db';
+import { accountCanAddFiles } from '$lib/util/sync/account-capabilities';
 import { isImageExtension } from '$lib/import';
 import { naturalSort } from '$lib/util/natural-sort';
 import { volumesWithTrash, VolumeData } from '$lib/settings/volume-data';
@@ -95,6 +96,8 @@ async function syncCoverSidecarToCloud(volumeUuid: string, thumbnailFile: File):
   if (!provider || !provider.isAuthenticated()) {
     return;
   }
+  // A progress-only account cannot add the cover file: skip, quietly.
+  if (!accountCanAddFiles(provider.getStatus())) return;
 
   const volume = await db.volumes.get(volumeUuid);
   if (!volume) {
@@ -151,12 +154,17 @@ export async function updateVolumeInDb(
 }
 
 /**
- * Propagate a volume title/series rename to the active cloud provider before local metadata changes.
+ * Propagate a volume title/series rename to the active cloud provider. Runs
+ * BEFORE the local DB update and GATES it (the caller commits locally only if
+ * this resolves). The fresh .mokuro is regenerated with the new names via
+ * overrides — the DB still holds the old ones here — so the remote sidecar
+ * content is correct without first mutating local state.
  */
 export async function renameVolumeInCloud(
   originalMetadata: VolumeMetadata,
   nextSeriesTitle: string,
-  nextVolumeTitle: string
+  nextVolumeTitle: string,
+  options?: { overwrite?: boolean }
 ): Promise<void> {
   if (
     originalMetadata.series_title === nextSeriesTitle &&
@@ -169,7 +177,9 @@ export async function renameVolumeInCloud(
     originalMetadata.series_title,
     originalMetadata.volume_title,
     nextSeriesTitle,
-    nextVolumeTitle
+    nextVolumeTitle,
+    originalMetadata.volume_uuid,
+    options
   );
 }
 
@@ -201,6 +211,15 @@ export function updateVolumeStats(
           timeReadInMinutes: updates.timeReadInMinutes
         }),
         ...(updates.completed !== undefined && { completed: updates.completed }),
+        /*
+         * Unlike `updateProgress`, a `false` here is an EXPLICIT user edit in
+         * the volume editor, so it really does mean "not finished" and clears
+         * the date. A `true` stamps one only when there isn't one already, so
+         * re-saving the editor never walks an existing completion forward.
+         */
+        ...(updates.completed === true &&
+          !currentVolume.completedAt && { completedAt: new Date().toISOString() }),
+        ...(updates.completed === false && { completedAt: undefined }),
         ...(updates.series_uuid !== undefined && { series_uuid: updates.series_uuid }),
         ...(updates.series_title !== undefined && { series_title: updates.series_title }),
         ...(updates.volume_title !== undefined && { volume_title: updates.volume_title })
@@ -225,8 +244,14 @@ export function resetVolumeProgress(volumeUuid: string): void {
         chars: 0,
         timeReadInMinutes: 0,
         completed: false,
+        completedAt: undefined,
         recentPageTurns: [],
         sessions: [],
+        // PRE-EXISTING: this lowers the stamp to the epoch, so the reset loses
+        // the next cloud merge and the old progress (and with it `completedAt`)
+        // comes back. Left as-is — it is this function's existing sync
+        // behaviour for every other field, and clearing the date here at least
+        // keeps the LOCAL state self-consistent in the meantime.
         lastProgressUpdate: new Date(0).toISOString()
       })
     };

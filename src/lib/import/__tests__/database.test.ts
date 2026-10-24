@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { saveVolume, volumeExists, deleteVolume } from '../database';
+import { saveVolume, volumeExists, removeVolumeFiles, deleteVolumeCompletely } from '../database';
 import type { ProcessedVolume, ProcessedMetadata, ProcessedPage } from '../types';
 
 // Mock the db module to use our test database
@@ -16,6 +16,8 @@ vi.mock('$lib/catalog/db', () => ({
   db: {
     volumes: {
       add: vi.fn(),
+      put: vi.fn(),
+      update: vi.fn(),
       get: vi.fn(),
       where: vi.fn(),
       delete: vi.fn()
@@ -30,9 +32,22 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn(),
       delete: vi.fn()
     },
+    volume_ocr_layers: {},
+    volume_ocr_layer_pages: {},
     transaction: vi.fn(),
     processThumbnails: vi.fn().mockResolvedValue(undefined)
   }
+}));
+
+// Layer rows are reached only through the layer store (two tables, one key);
+// with a hand-mocked `db` that module is the seam to stub.
+const deleteLayersOfVolume = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('$lib/catalog/layer-store', () => ({
+  deleteLayersOfVolume,
+  layerTables: (mockDb: { volume_ocr_layers: unknown; volume_ocr_layer_pages: unknown }) => [
+    mockDb.volume_ocr_layers,
+    mockDb.volume_ocr_layer_pages
+  ]
 }));
 
 // Import the mocked db
@@ -74,8 +89,7 @@ function createProcessedVolume(overrides: Partial<ProcessedVolume> = {}): Proces
         'page002.jpg': new File([], 'page002.jpg')
       }
     },
-    nestedSources: overrides.nestedSources ?? [],
-    ...overrides
+    nestedSources: overrides.nestedSources ?? []
   };
 }
 
@@ -129,6 +143,124 @@ describe('saveVolume', () => {
     expect(addCall.mokuro_version).toBe('0.3.0');
     expect(addCall.page_count).toBe(5);
     expect(addCall.character_count).toBe(500);
+  });
+
+  it('sanitizes filesystem-illegal characters in series and volume titles', async () => {
+    const volume = createProcessedVolume({
+      metadata: { series: 'A/B: C', volume: 'Vol?1' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume);
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('A／B： C');
+    expect(addCall.volume_title).toBe('Vol？1');
+  });
+
+  it('falls back to Untitled when a title sanitizes to empty', async () => {
+    const volume = createProcessedVolume({
+      metadata: { series: '   ', volume: '' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume);
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('Untitled');
+    expect(addCall.volume_title).toBe('Untitled');
+  });
+
+  it('preserveTitles keeps cloud-sourced titles exactly as stored in the remote', async () => {
+    // Cloud downloads must NOT sanitize: the stored title has to keep matching
+    // the remote path for legacy backups whose names contain now-illegal
+    // characters, or every cloud lookup (existsInCloud, rename) misses them.
+    const volume = createProcessedVolume({
+      metadata: { series: 'Steins;Gate: 0', volume: 'Vol?1' } as ProcessedMetadata
+    });
+
+    await saveVolume(volume, { preserveTitles: true });
+
+    const addCall = (db.volumes.add as any).mock.calls[0][0];
+    expect(addCall.series_title).toBe('Steins;Gate: 0');
+    expect(addCall.volume_title).toBe('Vol?1');
+  });
+
+  it('fills a row whose files were removed instead of rejecting it as a duplicate', async () => {
+    const retainedCover = new File(['cover'], 'thumb.webp', { type: 'image/webp' });
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      thumbnail: retainedCover,
+      thumbnail_width: 210,
+      thumbnail_height: 297
+    });
+
+    await saveVolume(
+      createProcessedVolume({
+        metadata: { thumbnail: null, thumbnailWidth: 0, thumbnailHeight: 0 } as any
+      })
+    );
+
+    // `put`, not `add`: the same row (and therefore the same history) is refilled.
+    expect(db.volumes.add).not.toHaveBeenCalled();
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.metadata_only).toBeUndefined();
+    expect(written.thumbnail).toBe(retainedCover);
+    expect(written.thumbnail_width).toBe(210);
+  });
+
+  it('prefers the reinstalled archive’s own cover over the retained one', async () => {
+    const retainedCover = new File(['old'], 'old.webp', { type: 'image/webp' });
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      thumbnail: retainedCover
+    });
+
+    await saveVolume(createProcessedVolume());
+
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.thumbnail).not.toBe(retainedCover);
+    expect(written.metadata_only).toBeUndefined();
+  });
+
+  it('records the hash of the bytes the OCR came from, and where the cloud stores them', async () => {
+    const hash = 'a'.repeat(64);
+    const cloud = { provider: 'webdav', size: 77, modified: 1_790_000_000 };
+    await saveVolume(
+      createProcessedVolume({
+        metadata: {
+          ...createProcessedVolume().metadata,
+          mokuroSha256: hash,
+          mokuroCloud: cloud
+        }
+      })
+    );
+    const added = (db.volumes.add as any).mock.calls[0][0];
+    expect(added.mokuro_sha256).toBe(hash);
+    expect(added.mokuro_sha256_cloud).toEqual(cloud);
+  });
+
+  it('a reinstall from bytes with no hash (image-only) leaves no stale hash behind', async () => {
+    (db.volumes.get as any).mockResolvedValue({
+      volume_uuid: 'test-volume-uuid',
+      metadata_only: true,
+      mokuro_sha256: 'b'.repeat(64),
+      mokuro_sha256_cloud: { provider: 'webdav', size: 5 },
+      updated_ocr_sha256: 'c'.repeat(64)
+    });
+    await saveVolume(createProcessedVolume());
+    const written = (db.volumes.put as any).mock.calls[0][0];
+    expect(written.mokuro_sha256).toBeUndefined();
+    expect(written.mokuro_sha256_cloud).toBeUndefined();
+    expect(written.updated_ocr_sha256).toBeUndefined();
+  });
+
+  it('still rejects a genuinely installed duplicate', async () => {
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'test-volume-uuid' });
+
+    await expect(saveVolume(createProcessedVolume())).rejects.toThrow('already exists');
+    expect(db.volumes.put).not.toHaveBeenCalled();
+    expect(db.volumes.add).not.toHaveBeenCalled();
   });
 
   it('writes OCR data with pages (strips cumulativeChars)', async () => {
@@ -273,9 +405,17 @@ describe('volumeExists', () => {
 
     expect(exists).toBe(false);
   });
+
+  it('does not count a row whose files were removed — re-importing reinstalls it', async () => {
+    (db.volumes.get as any).mockResolvedValue({ volume_uuid: 'stripped', metadata_only: true });
+
+    const exists = await volumeExists('stripped');
+
+    expect(exists).toBe(false);
+  });
 });
 
-describe('deleteVolume', () => {
+describe('removeVolumeFiles', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (db.transaction as any).mockImplementation(
@@ -285,20 +425,63 @@ describe('deleteVolume', () => {
     );
   });
 
-  it('deletes from all three tables', async () => {
-    await deleteVolume('test-uuid');
+  it('drops the OCR and file rows but keeps the volume row', async () => {
+    await removeVolumeFiles('test-uuid');
 
-    expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
     expect(db.volume_files.delete).toHaveBeenCalledWith('test-uuid');
+    // The row carries the read history and the cover — it must survive.
+    expect(db.volumes.delete).not.toHaveBeenCalled();
+  });
+
+  it('flags the surviving row as not installed', async () => {
+    await removeVolumeFiles('test-uuid');
+
+    expect(db.volumes.update).toHaveBeenCalledWith('test-uuid', { metadata_only: true });
   });
 
   it('uses transaction for atomicity', async () => {
-    await deleteVolume('test-uuid');
+    await removeVolumeFiles('test-uuid');
 
     expect(db.transaction).toHaveBeenCalledWith(
       'rw',
       expect.arrayContaining([db.volumes, db.volume_ocr, db.volume_files]),
+      expect.any(Function)
+    );
+  });
+});
+
+describe('deleteVolumeCompletely', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (db.transaction as any).mockImplementation(
+      async (_mode: string, _tables: any[], callback: () => Promise<void>) => {
+        await callback();
+      }
+    );
+  });
+
+  it('deletes from the three volume tables and both layer tables', async () => {
+    await deleteVolumeCompletely('test-uuid');
+
+    expect(db.volumes.delete).toHaveBeenCalledWith('test-uuid');
+    expect(db.volume_ocr.delete).toHaveBeenCalledWith('test-uuid');
+    expect(db.volume_files.delete).toHaveBeenCalledWith('test-uuid');
+    expect(deleteLayersOfVolume).toHaveBeenCalledWith(db, 'test-uuid');
+  });
+
+  it('uses transaction for atomicity', async () => {
+    await deleteVolumeCompletely('test-uuid');
+
+    expect(db.transaction).toHaveBeenCalledWith(
+      'rw',
+      expect.arrayContaining([
+        db.volumes,
+        db.volume_ocr,
+        db.volume_files,
+        db.volume_ocr_layers,
+        db.volume_ocr_layer_pages
+      ]),
       expect.any(Function)
     );
   });

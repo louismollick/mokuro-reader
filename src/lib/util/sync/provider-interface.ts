@@ -5,7 +5,7 @@
  * This allows for a unified sync experience across different cloud storage backends.
  */
 
-export type ProviderType = 'google-drive' | 'mega' | 'webdav';
+export type ProviderType = 'google-drive' | 'mega' | 'webdav' | 'filesystem' | 'onedrive';
 
 /**
  * Pseudo-provider for local browser downloads (not a real sync provider)
@@ -25,7 +25,13 @@ export type BackupProviderType = ProviderType | PseudoProviderType;
  * Type guard to check if a provider is a real sync provider
  */
 export function isRealProvider(provider: BackupProviderType): provider is ProviderType {
-  return provider === 'google-drive' || provider === 'mega' || provider === 'webdav';
+  return (
+    provider === 'google-drive' ||
+    provider === 'mega' ||
+    provider === 'webdav' ||
+    provider === 'filesystem' ||
+    provider === 'onedrive'
+  );
 }
 
 /**
@@ -72,7 +78,7 @@ class ExportProvider {
     throw new Error('Export provider does not support cloud operations');
   }
 
-  async uploadFile(): Promise<string> {
+  async uploadFile(): Promise<UploadFileResult> {
     throw new Error('Export provider does not support cloud operations');
   }
 
@@ -110,6 +116,55 @@ export interface ProviderStatus {
   statusMessage: string;
   /** Whether the provider is in read-only mode (e.g., WebDAV without write permissions) */
   isReadOnly?: boolean;
+  /**
+   * The server compiles `series.json` and `catalog.json` itself (mokuro-bunko).
+   * Clients must not produce those files for it: bunko is the sole producer, and
+   * a client write would race its regeneration. Absent/false = a plain storage
+   * backend, where the client is the producer.
+   */
+  serverCompilesMetadata?: boolean;
+  /**
+   * Per-series metadata (names/links/tag/unit/spine offsets) edit scope, as reported by a
+   * provider capable of restricting it (currently mokuro-bunko's identity endpoint, via
+   * WebDAV). Absent = no restriction — an older server that doesn't report the field, or
+   * any provider that doesn't support the concept at all.
+   */
+  metadataPermissions?: SeriesMetadataPermissions;
+  /**
+   * Whether this account may modify/delete existing server files, as reported by a
+   * provider capable of restricting it (mokuro-bunko's identity endpoint). Absent =
+   * no restriction — a server or provider without the concept.
+   */
+  canModifyDelete?: boolean;
+  /**
+   * Whether this account may add files to the shared library (upload archives,
+   * sidecars, layer files, create folders), as reported by a provider capable of
+   * restricting it (mokuro-bunko's identity endpoint). A progress-only account
+   * is NOT read-only — its progress still syncs — but must not try to back up.
+   * Absent = no restriction — a server or provider without the concept.
+   */
+  canAddFiles?: boolean;
+  /**
+   * Stable, non-secret identifier for the connected account, used to scope the
+   * cloud metadata cache so switching accounts cannot cross-contaminate it.
+   * Shape: `<provider>:<discriminator>`. NEVER include a password or token —
+   * this is persisted to IndexedDB. Absent = the provider cannot identify an
+   * account, and the cache is skipped entirely for it.
+   */
+  accountScope?: string;
+}
+
+/** Scope of a `metadataPermissions.scope` value — see `ProviderStatus.metadataPermissions`. */
+export type SeriesMetadataScope = 'all' | 'owned' | 'none';
+
+/**
+ * Per-series metadata edit permissions reported by the server. `canEditSeriesMetadata` in
+ * `$lib/util/sync/metadata-permissions.ts` is the single place that interprets this.
+ */
+export interface SeriesMetadataPermissions {
+  scope: SeriesMetadataScope;
+  /** Series FOLDER names this account may edit; present only when scope === 'owned'. */
+  ownedSeries?: string[];
 }
 
 /**
@@ -134,6 +189,43 @@ export interface ProviderCredentials {
 export type UploadPayload = Blob | ArrayBuffer | Uint8Array;
 
 /**
+ * What a provider's `uploadFile` learned about the file it just wrote.
+ *
+ * `modifiedTime` is the SERVER's modification timestamp for the uploaded
+ * file, captured from the upload response itself (Drive's file resource,
+ * Graph's completed driveItem, a MEGA node, a filesystem stat) — never the
+ * client clock, and never an extra round trip. When the upload response
+ * carries no usable timestamp (a plain WebDAV PUT), the field stays absent
+ * and the upload-time cache entry is marked `modifiedTimeProvisional` — see
+ * `CloudFileMetadata`.
+ */
+/**
+ * A server that OCRs what it receives (mokuro-bunko) queued the uploaded
+ * archive: where its volume manifest is, and when it suggests looking again.
+ */
+export interface ServerOcrQueued {
+  /** Absolute URL of the volume's manifest. */
+  manifestUrl: string;
+  /** Seconds until the earliest predicted finish; null when the server gave none usable. */
+  recheckAfter: number | null;
+}
+
+export interface UploadFileResult {
+  /** File ID in cloud storage (the value the old string-returning contract carried). */
+  fileId: string;
+  /** The server queued this upload for OCR (WebDAV to mokuro-bunko only). */
+  serverOcr?: ServerOcrQueued;
+  /** The response said the server stages and verifies PUTs (`X-Mokuro-Put: verified`). */
+  serverPutVerified?: boolean;
+  /** The server checked the body against our `Content-Digest` (`sha-256`): verified end to end. */
+  serverDigestVerified?: string;
+  /** Server-reported modification time (ISO 8601), when the upload response carried one. */
+  modifiedTime?: string;
+  /** Server-reported size in bytes, when the upload response carried one. */
+  size?: number;
+}
+
+/**
  * Base metadata for a cloud-stored file (CBZ file)
  * This is the common interface - use provider-specific types when possible
  */
@@ -146,6 +238,18 @@ export interface CloudFileMetadata {
   path: string;
   /** File modification timestamp */
   modifiedTime: string;
+  /**
+   * True when `modifiedTime` was fabricated from the CLIENT clock — an
+   * upload-time cache entry whose provider response carried no server
+   * timestamp — rather than reported by the server. Consumers that PUBLISH a
+   * timestamp (`cloud-sidecar-stamps.ts`) must skip flagged entries: a
+   * client-clock stamp written into `series.json` makes the next real
+   * listing's server mtime look "newer" and re-pulls a file that never
+   * changed. Absent/false = `modifiedTime` came from the provider (a
+   * listing, a rename response, or an upload response). The next full
+   * listing replaces flagged entries wholesale with server-stamped ones.
+   */
+  modifiedTimeProvisional?: boolean;
   /** File size in bytes */
   size: number;
   /** Optional description/metadata */
@@ -187,10 +291,35 @@ export interface WebDAVFileMetadata extends CloudFileMetadata {
 }
 
 /**
+ * Filesystem (File System Access API) specific metadata
+ * Extends base with no additional fields — path acts as the identifier.
+ */
+export interface FilesystemFileMetadata extends CloudFileMetadata {
+  provider: 'filesystem';
+}
+
+/**
+ * OneDrive (Microsoft Graph) specific metadata.
+ * `fileId` holds the opaque Graph driveItem.id.
+ */
+export interface OneDriveFileMetadata extends CloudFileMetadata {
+  provider: 'onedrive';
+  /** Parent folder driveItem id (useful for move/rename) */
+  parentId?: string;
+  /** Entity tag for conditional updates */
+  etag?: string;
+}
+
+/**
  * Discriminated union of all cloud file metadata types
  * Use this when you need to handle any provider's metadata
  */
-export type AnyCloudFileMetadata = DriveFileMetadata | MegaFileMetadata | WebDAVFileMetadata;
+export type AnyCloudFileMetadata =
+  | DriveFileMetadata
+  | MegaFileMetadata
+  | WebDAVFileMetadata
+  | FilesystemFileMetadata
+  | OneDriveFileMetadata;
 
 export interface SyncProvider {
   /** Provider type identifier */
@@ -205,6 +334,13 @@ export interface SyncProvider {
    * - false: Main thread must download, workers decompress only (MEGA)
    */
   readonly supportsWorkerDownload: boolean;
+
+  /**
+   * Indicates if this provider supports uploads in web workers.
+   * - true: Workers compress + upload (Google Drive, MEGA, WebDAV)
+   * - false: Main thread must compress + upload (filesystem: handle is window-bound)
+   */
+  readonly supportsWorkerUpload: boolean;
 
   /**
    * Maximum concurrent upload operations for this provider
@@ -248,14 +384,39 @@ export interface SyncProvider {
    * @param blob File data as Blob
    * @param description Optional file description
    * @param onProgress Optional progress callback (loaded, total)
-   * @returns File ID in cloud storage
+   * @returns File ID plus, when the upload response carried one, the
+   *          server's own modification time — see {@link UploadFileResult}
    */
   uploadFile(
     path: string,
     blob: UploadPayload,
     description?: string,
     onProgress?: (loaded: number, total: number) => void
-  ): Promise<string>;
+  ): Promise<UploadFileResult>;
+
+  /**
+   * Upload WITHOUT any post-upload refresh work — the write-and-forget path
+   * for callers that do not need to read the result back (the sidecar
+   * backfill: it converges through the targeted cache add the unified layer
+   * performs, never through a listing).
+   *
+   * OPTIONAL, and absent means `uploadFile` is already blind: implement this
+   * only when the ordinary `uploadFile` performs extra refresh work worth
+   * skipping. Google Drive is the one such provider today — its `uploadFile`
+   * ends with a FULL paged listing refetch (13+ `files.list` calls on a
+   * 12,500-file library), which `blindUploadFile` skips. Callers go through
+   * `unifiedCloudManager.blindUploadFile`, which handles the fallback and
+   * documents WHICH callers qualify — a write must change nothing any view
+   * renders, be retryable by a self-healing process, and lose nothing
+   * important on failure; everything else stays on `uploadFile`, whose
+   * refreshed cache is how backups are confirmed and rendered.
+   */
+  blindUploadFile?(
+    path: string,
+    blob: UploadPayload,
+    description?: string,
+    onProgress?: (loaded: number, total: number) => void
+  ): Promise<UploadFileResult>;
 
   /**
    * Download a file from cloud storage
@@ -293,6 +454,24 @@ export interface SyncProvider {
   deleteSeriesFolder?(seriesTitle: string): Promise<void>;
 
   /**
+   * Re-run the provider's identity/permission check and publish the result via a
+   * status update. Providers whose permissions can change server-side mid-session
+   * (mokuro-bunko: `ownedSeries` grows as this account uploads) implement this so
+   * the UI's gates track reality without a reconnect. Must fail quietly.
+   */
+  refreshIdentity?(): Promise<void>;
+
+  /**
+   * Optionally remove a directory ONLY if the provider confirms (server-side)
+   * that it is empty. Used for best-effort cleanup after a rename moves a
+   * volume out of its old series folder. Implementations MUST verify emptiness
+   * against the backend before deleting — never a blind recursive delete — and
+   * may no-op if they can't guarantee that. Providers without real directories
+   * (or that auto-prune) can omit this.
+   */
+  removeDirectoryIfEmpty?(relativePath: string): Promise<void>;
+
+  /**
    * Get storage quota information from the provider
    * @returns Storage quota with used, total, and available bytes
    */
@@ -303,6 +482,13 @@ export interface SyncProvider {
    * Keep credential source/provider details encapsulated in the provider implementation.
    */
   getWorkerUploadCredentials?(): Promise<Record<string, any>>;
+
+  /**
+   * An upload response said the server stages and verifies its PUTs
+   * (`UploadFileResult.serverPutVerified`): remember it, so later uploads can
+   * replace a file in place instead of deleting it first. WebDAV only.
+   */
+  notePutVerified?(): void;
 
   /**
    * Optional: Ensure upload target (e.g., series folder) exists before worker upload starts.

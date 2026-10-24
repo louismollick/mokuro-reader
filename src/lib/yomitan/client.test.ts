@@ -1,7 +1,9 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 const state = vi.hoisted(() => ({
-  profile: { options: { tags: [] as string[], anki: { enable: false } } }
+  profile: {
+    options: { tags: [] as string[], general: { popupTheme: 'light' }, anki: { enable: false } }
+  }
 }));
 
 vi.mock('yomitan-core', () => ({
@@ -24,17 +26,13 @@ vi.mock('@yomitan-core/web', () => ({
   createIndexedDbStorage: () => ({}),
   createBrowserImageInfoReader: () => ({})
 }));
-vi.mock('$lib/settings', () => ({
-  settings: {
-    subscribe: (run: (value: unknown) => void) => {
-      run({ ankiConnectSettings: { enabled: true } });
-      return () => {};
-    }
-  }
-}));
+const settingsStore = await vi.hoisted(async () => {
+  const { writable } = await import('svelte/store');
+  return writable({ ankiConnectSettings: { enabled: true } });
+});
+vi.mock('$lib/settings', () => ({ settings: settingsStore }));
 vi.mock('$lib/util/snackbar', () => ({ showSnackbar: vi.fn() }));
 vi.mock('./profile-migration', () => ({
-  applyLegacySettingsToProfile: (profile: unknown) => profile,
   applyPendingDictionaryPreferences: (_p: unknown, pending: unknown[]) => ({
     pending,
     changed: false
@@ -51,6 +49,30 @@ describe('editProfile', () => {
   it('enables popup Anki actions when the mokuro integration is enabled', async () => {
     const client = await getYomitan();
     expect(client.profile.get().options.anki.enable).toBe(true);
+  });
+
+  it('mirrors later changes of the AnkiConnect toggle into the profile', async () => {
+    await getYomitan();
+    settingsStore.set({ ankiConnectSettings: { enabled: false } });
+    await vi.waitFor(() => expect(state.profile.options.anki.enable).toBe(false));
+  });
+
+  it('starts a fresh profile on the dark popup theme', async () => {
+    const client = await getYomitan();
+    expect(client.profile.get().options.general.popupTheme).toBe('dark');
+  });
+
+  it('settles an edit made before the client finished initializing', async () => {
+    vi.resetModules();
+    const fresh = await import('./client');
+    // No getYomitan() first: init queues its own edits, so this must not wait on them.
+    await expect(
+      Promise.race([
+        fresh.editProfile(() => {}),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('deadlock')), 1000))
+      ])
+    ).resolves.toBeUndefined();
+    await fresh.getYomitan();
   });
 
   it('serializes concurrent edits so both land', async () => {

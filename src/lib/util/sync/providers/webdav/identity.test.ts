@@ -49,7 +49,59 @@ describe('fetchServerIdentity', () => {
       kind: 'authenticated',
       username: 'alice',
       role: 'registered',
-      permissions: PERMS
+      permissions: PERMS,
+      endpoint: 'https://host/login/api/me'
+    });
+  });
+
+  describe('permissions.metadata (per-series metadata edit scope)', () => {
+    async function identityWith(permissions: Record<string, unknown>) {
+      const { impl } = mockFetch({
+        'https://host/login/api/me': jsonResponse(200, {
+          authenticated: true,
+          username: 'alice',
+          role: 'registered',
+          permissions
+        })
+      });
+      return fetchServerIdentity('https://host', 'alice', 'pw', impl);
+    }
+
+    it('is absent from permissions when the server response omits it (older bunko)', async () => {
+      const result = await identityWith({ ...PERMS });
+      expect(result.kind).toBe('authenticated');
+      expect(result.kind === 'authenticated' && result.permissions.metadata).toBeUndefined();
+    });
+
+    it('parses scope "all" with no ownedSeries', async () => {
+      const result = await identityWith({ ...PERMS, metadata: { scope: 'all' } });
+      expect(result.kind === 'authenticated' && result.permissions.metadata).toEqual({
+        scope: 'all'
+      });
+    });
+
+    it('parses scope "owned" with its ownedSeries list', async () => {
+      const result = await identityWith({
+        ...PERMS,
+        metadata: { scope: 'owned', ownedSeries: ['One Piece', 'Berserk'] }
+      });
+      expect(result.kind === 'authenticated' && result.permissions.metadata).toEqual({
+        scope: 'owned',
+        ownedSeries: ['One Piece', 'Berserk']
+      });
+    });
+
+    it('treats scope "owned" with a missing/non-array ownedSeries as an empty list, not a parse failure', async () => {
+      const result = await identityWith({ ...PERMS, metadata: { scope: 'owned' } });
+      expect(result.kind === 'authenticated' && result.permissions.metadata).toEqual({
+        scope: 'owned',
+        ownedSeries: []
+      });
+    });
+
+    it('drops an unrecognizable scope value rather than passing it through', async () => {
+      const result = await identityWith({ ...PERMS, metadata: { scope: 'bogus' } });
+      expect(result.kind === 'authenticated' && result.permissions.metadata).toBeUndefined();
     });
   });
 
@@ -206,11 +258,13 @@ describe('fetchServerIdentity', () => {
     });
 
     const result = await fetchServerIdentity('https://host/sub', 'alice', 'pw', impl);
+    // The origin-root endpoint answered: the token endpoint goes beside it.
     expect(result).toEqual({
       kind: 'authenticated',
       username: 'alice',
       role: 'registered',
-      permissions: PERMS
+      permissions: PERMS,
+      endpoint: 'https://host/login/api/me'
     });
     expect(calls.map((c) => c.url)).toEqual([
       'https://host/sub/login/api/me',

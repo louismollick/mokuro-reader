@@ -1,5 +1,142 @@
 # Changelog
 
+## [1.10.0] - 2026-10-02
+
+### Added
+
+- **Progress tracker** — yearly goal, daily or weekly targets, deadlines (#275, @ChristopherFritz)
+- See what you're reading, what's next, and what you've finished
+- Goals and deadlines follow you to every device
+- **Fix OCR mistakes yourself** — press E to edit, move or redraw text
+- Undo, redo, or go back to the original text anytime
+- Right-click any text box and choose "Edit this text"
+- **Multiple OCR versions per volume** — press L to switch between them
+- OCR versions sync to your cloud and ride along in backups
+- **Better OCR arrives automatically** — re-OCR'd volumes update themselves; your fixes stay
+- mokuro-bunko: see which volumes await OCR and when they'll be ready
+- mokuro-bunko: stays signed in without resending your password
+- mokuro-bunko: shared links bring the cover and every OCR version
+
+### Changed
+
+- Text lines up more evenly, and slanted text follows the page
+- Continuous scroll loads much faster on long volumes
+- Volumes open right on your page, without scrolling there
+- Interrupted uploads to WebDAV servers retry on their own
+- mokuro-bunko checks every upload and resends damaged ones
+- mokuro-bunko explains why your account can't upload or rename
+- Reading stats and history stay current after every sync
+- Covers load from cache instead of downloading again
+
+### Fixed
+
+- No black flash when opening a volume or turning your device
+- Volumes open faster
+- Failed uploads no longer go unnoticed; retry them from the volume
+- Deleting a series now counts volumes, not files
+- Original mode keeps text inside its box
+- Messages no longer appear off-screen or behind the progress bar
+- Renaming a series folder in your cloud no longer hides it (#278)
+- Exports no longer download duplicate files (#281)
+- mokuro-bunko behind a custom path now gets server OCR
+- mokuro-bunko uploaders can delete their own series
+
+## [1.9.1] - 2026-08-30
+
+### Fixed
+
+- Trackpad zoom is now smooth instead of lurching (#259)
+- Trackpad pinch zooms even with wheel swap on (#259)
+- Night mode tints extension popups and menus again
+
+## [1.9.0] - 2026-08-29
+
+### Added
+
+- **AniList tracking** — push read progress and re-reads to AniList for every linked series
+- **Series lookup and names** — AniList linking brings alt titles and synonyms; search matches them all; titles display in your preferred language
+- **Series editor** — pencil or hover + E: rename, AniList link, titles, tag, tracking
+- **Re-reading** — restart a finished series; the previous read archives and re-read counts sync
+- **Legacy cloud upgrades** — installed volumes quietly fill in whatever your cloud library is missing
+- **Persistent series stats** — removing volumes from device keeps stats, history and covers
+- **Not-on-device volumes** — full catalog cards before you download: cover, size and reading stats
+- **Spine width** — spine shelf offsets sync across devices
+- **Bunko integration** — improved throughout, with better handling of write-permission issues
+- Hover a series card and press Delete to remove it
+
+### Changed
+
+- Settings profiles now sync automatically; button removed
+- Huge cloud libraries browse without repeated full-library scans
+- Cloud covers cached per account, downloaded visible-first, expire after 14 days
+
+## [1.8.3] - 2026-08-26
+
+### Fixed
+
+- Fixed Firefox downloads aborting after 30 seconds (#177, #261)
+
+## [1.8.2] - 2026-07-09
+
+### Fixed
+
+- Fixed Yomitan sentence capture stopping at OCR line breaks (#254)
+
+### Changed
+
+- Refreshed cloud provider descriptions (Drive quota and auto re-auth)
+
+## [1.8.1] - 2026-07-06
+
+### Fixed
+
+- Fixed MEGA sync repeatedly failing with 'not found' errors
+
+## [1.8.0] - 2026-07-05
+
+### Added
+
+- New Local Folder provider: Chromium-only bulk export, or direct access to sync-only files (#250)
+- OneDrive added as a cloud sync provider (#250)
+- Paged mode pages can now have a gap between them (#234)
+- Ctrl/Cmd+Shift+Scroll live-adjusts the page gap (#234)
+
+### Fixed
+
+- Quick Actions button's solid background restored (#249)
+- Fixed a bug where reconnecting Google Drive could revert synced progress
+- File type matching on Drive and MEGA is now case-insensitive
+- Fixed overlapping text lines in auto mode
+
+### Changed
+
+- Expired Google Drive sessions now show a Reconnect button
+- Google Drive reconnect works reliably everywhere now, no popup setup needed
+- WebDAV now mentions Mokuro-Bunko server compatibility
+
+## [1.7.5] - 2026-07-05
+
+### Added
+
+- Blocks series rename when cloud has undownloaded volumes (#233)
+- Confirms before overwriting an existing cloud backup (#233)
+- Sanitizes titles for filesystem/cloud safety on save (#233)
+- Old cloud series folder auto-deleted after rename
+
+### Fixed
+
+- Text placement significantly improved in auto mode (#243)
+- Cloud-backed volume renames no longer revert after sync (#233)
+- Series rename now updates every volume's cloud metadata (#233)
+- Cloud-downloaded titles no longer mangled by sanitization (#233)
+- MEGA library now updates live after cloud renames (#233)
+- Duplicate OCR blocks deduplicated across all font modes (#243)
+
+### Changed
+
+- Auto font-size now positions each line by its own quad (#243)
+- Series rename now applies per-volume, reporting partial failures (#233)
+
 ## [1.7.4] - 2026-06-30
 
 ### Added

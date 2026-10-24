@@ -4,6 +4,11 @@
  */
 
 import { writable, derived, get } from 'svelte/store';
+import {
+  consumeAniListReturnHash,
+  handleAniListCallbackHash,
+  isAniListCallbackHash
+} from '$lib/metadata/anilist-auth';
 
 /**
  * View types for in-app navigation
@@ -18,8 +23,8 @@ export type View =
   | { type: 'upload' }
   | { type: 'reading-speed' }
   | { type: 'merge-series' }
-  | { type: 'libraries' }
-  | { type: 'add-library'; params?: Record<string, string> };
+  | { type: 'progress-tracker' }
+  | { type: 'manage-goals' };
 
 function getInitialView(): View {
   if (typeof window !== 'undefined') {
@@ -47,6 +52,9 @@ export function parseHash(hash: string): View {
     if (segments[0] === 'upload') return { type: 'upload' };
     if (segments[0] === 'reading-speed') return { type: 'reading-speed' };
     if (segments[0] === 'merge-series') return { type: 'merge-series' };
+    if (segments[0] === 'progress-tracker') return { type: 'progress-tracker' };
+    if (segments[0] === 'manage-goals') return { type: 'manage-goals' };
+    // Removed libraries feature: send stale bookmarks to the catalog
     if (segments[0] === 'libraries' || segments[0] === 'add-library') return { type: 'catalog' };
 
     if (segments[0] === 'series' && segments.length >= 2) {
@@ -94,16 +102,10 @@ export function viewToHash(view: View): string {
       return '#/reading-speed';
     case 'merge-series':
       return '#/merge-series';
-    case 'libraries':
-      return '#/libraries';
-    case 'add-library': {
-      const base = '#/add-library';
-      if (view.params && Object.keys(view.params).length > 0) {
-        const searchParams = new URLSearchParams(view.params);
-        return `${base}?${searchParams.toString()}`;
-      }
-      return base;
-    }
+    case 'progress-tracker':
+      return '#/progress-tracker';
+    case 'manage-goals':
+      return '#/manage-goals';
   }
 }
 
@@ -165,12 +167,11 @@ export const nav = {
   /** Navigate to merge series page */
   toMergeSeries: (options?: NavigateOptions) => navigate({ type: 'merge-series' }, options),
 
-  /** Navigate to libraries page */
-  toLibraries: (options?: NavigateOptions) => navigate({ type: 'libraries' }, options),
+  /** Navigate to progress tracker page */
+  toProgressTracker: (options?: NavigateOptions) => navigate({ type: 'progress-tracker' }, options),
 
-  /** Navigate to add library page */
-  toAddLibrary: (params?: Record<string, string>, options?: NavigateOptions) =>
-    navigate({ type: 'add-library', params }, options)
+  /** Navigate to manage goals page */
+  toManageGoals: (options?: NavigateOptions) => navigate({ type: 'manage-goals' }, options)
 };
 
 /**
@@ -186,6 +187,8 @@ export const nav = {
  * - reading-speed -> catalog
  * - upload -> catalog
  * - merge-series -> catalog
+ * - progress-tracker -> catalog
+ * - manage-goals -> progress-tracker
  * - catalog -> (no-op)
  */
 export function navigateBack(): void {
@@ -204,15 +207,18 @@ export function navigateBack(): void {
     case 'series':
       nav.toCatalog();
       break;
+    case 'manage-goals':
+      // Manage Goals is only ever reached from the tracker, and its own button
+      // says "Back to Progress" — sending Escape to the catalog instead would
+      // make the two disagree and drop the user a level further than the UI says.
+      nav.toProgressTracker();
+      break;
     case 'cloud':
     case 'reading-speed':
     case 'upload':
     case 'merge-series':
-    case 'libraries':
+    case 'progress-tracker':
       nav.toCatalog();
-      break;
-    case 'add-library':
-      nav.toLibraries();
       break;
     case 'catalog':
       // Already at root, do nothing
@@ -249,6 +255,28 @@ export const isOnReader = derived(currentView, ($currentView) => $currentView.ty
  * Call this on app initialization, returns cleanup function
  */
 export function initRouter(): () => void {
+  // AniList implicit-grant callback lands on `{origin}/#access_token=…` — in
+  // whatever parameter order AniList chooses, hence the order-independent test.
+  // Handled first, before the legacy-pathname redirect below — that block
+  // rewrites the hash outright on subpath deploys, which would otherwise
+  // wipe the fragment before we ever get to read it.
+  if (isAniListCallbackHash(window.location.hash)) {
+    const callbackHash = window.location.hash;
+    const rawReturnHash = consumeAniListReturnHash();
+    // Only a same-origin script can have written `anilist_return` (it's set
+    // by startAniListLogin() right before navigating to AniList), so its
+    // presence is proof this tab initiated the login. An attacker can send
+    // a bare `#access_token=…` link with no such key set — without this
+    // check that link would silently log the victim into the attacker's
+    // AniList account. Absent proof, scrub the fragment and store nothing.
+    const returnHash =
+      rawReturnHash && rawReturnHash.startsWith('#/') ? rawReturnHash : '#/catalog';
+    window.history.replaceState(null, '', '/' + returnHash);
+    if (rawReturnHash) {
+      void handleAniListCallbackHash(callbackHash).catch(() => {});
+    }
+  }
+
   // Handle legacy pathname-based routes from before hash router migration
   const pathname = window.location.pathname;
 

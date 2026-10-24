@@ -3,7 +3,9 @@ import { get } from 'svelte/store';
 import {
   grayscaleActive,
   imageFilter,
+  preferredTitleLanguage,
   migrateProfiles,
+  updateCatalogSetting,
   updateScheduleSetting,
   updateSetting
 } from './settings';
@@ -19,6 +21,11 @@ describe('migrateProfiles', () => {
     expect(reloaded.Test.ankiConnectSettings.apiKey).toBe('saved-key');
   });
 
+  it('turns Capture off by default (Tap Lookup owns the single tap)', () => {
+    const migrated = migrateProfiles({ Fresh: {} as never });
+    expect(migrated.Fresh.ankiConnectSettings.triggerMethod).toBe('neither');
+  });
+
   it('adds yomitanPopupOnTextBoxTap default for existing profiles', () => {
     const migrated = migrateProfiles({
       LegacyProfile: {
@@ -27,10 +34,6 @@ describe('migrateProfiles', () => {
     });
 
     expect(migrated.LegacyProfile.yomitanPopupOnTextBoxTap).toBe(false);
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupDeckName).toBe('Default');
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupModelName).toBe('Basic');
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupFieldMappings).toEqual({});
-    expect(migrated.LegacyProfile.ankiConnectSettings.popupDuplicateBehavior).toBe('new');
   });
 });
 
@@ -60,6 +63,13 @@ describe('theme migration', () => {
     });
     expect(out.Test.customTheme.accent).toBe('#abcdef');
     expect(out.Test.customTheme.background).toBeDefined();
+  });
+});
+
+describe('pagedGap migration', () => {
+  it('fills pagedGap with its default for profiles saved before the setting existed', () => {
+    const migrated = migrateProfiles({ Default: { dark: true } } as any);
+    expect(migrated.Default.pagedGap).toBe(0);
   });
 });
 
@@ -130,5 +140,93 @@ describe('imageFilter', () => {
     updateSetting('invertColors', true);
     updateSetting('grayscale', true);
     expect(get(imageFilter)).toBe('invert(1) grayscale(1)');
+  });
+});
+
+describe('preferredTitleLanguage migration', () => {
+  it('defaults a profile with no catalogSettings.preferredTitleLanguage to native', () => {
+    // Japanese is the default: this is a Japanese learning app (user ruling 2026-08-24).
+    const out = migrateProfiles({ Test: { catalogSettings: { stackCount: 2 } } as any });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
+    // Existing catalog values must survive the merge
+    expect(out.Test.catalogSettings.stackCount).toBe(2);
+  });
+
+  it('preserves a valid preferredTitleLanguage', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'english' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('english');
+  });
+
+  it("migrates the retired 'romaji' preference to the native progression", () => {
+    // Romaji stopped being a primary choice when languages became progressions;
+    // it is the second step of both chains instead.
+    const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'romaji' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
+  });
+
+  it('coerces an unknown preferredTitleLanguage back to native', () => {
+    const out = migrateProfiles({
+      Test: { catalogSettings: { preferredTitleLanguage: 'klingon' } } as any
+    });
+    expect(out.Test.catalogSettings.preferredTitleLanguage).toBe('native');
+  });
+});
+
+describe('preferredTitleLanguage store', () => {
+  afterEach(() => {
+    updateCatalogSetting('preferredTitleLanguage', 'native');
+  });
+
+  it('emits only when the language itself changes', () => {
+    // The catalog store joins this one instead of `catalogSettings` precisely because a
+    // primitive dedupes: an unrelated write must not rebuild the whole library.
+    const seen: string[] = [];
+    const unsubscribe = preferredTitleLanguage.subscribe((value) => seen.push(value));
+    expect(seen).toEqual(['native']);
+
+    updateSetting('pagedGap', 9);
+    updateCatalogSetting('stackCount', 5);
+    expect(seen).toEqual(['native']);
+
+    updateCatalogSetting('preferredTitleLanguage', 'english');
+    expect(seen).toEqual(['native', 'english']);
+
+    updateCatalogSetting('preferredTitleLanguage', 'english');
+    expect(seen).toEqual(['native', 'english']);
+
+    unsubscribe();
+  });
+});
+
+describe('pushProgressToAniList migration', () => {
+  it('defaults to true for profiles saved before the setting existed', () => {
+    const migrated = migrateProfiles({
+      Default: { catalogSettings: { stackingPreset: 'default' } }
+    } as any);
+    expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
+    expect(migrated.Default.catalogSettings.stackingPreset).toBe('default');
+  });
+
+  it('coerces a non-boolean stored value back to true', () => {
+    const migrated = migrateProfiles({
+      Default: { catalogSettings: { pushProgressToAniList: 'false' } }
+    } as any);
+    expect(migrated.Default.catalogSettings.pushProgressToAniList).toBe(true);
+  });
+});
+
+describe('notOnDeviceDisplay removal', () => {
+  it('strips the retired key from stored profiles', () => {
+    // The mixed/cloud-section display mode was removed 2026-08-24: cloud content
+    // is always its own section now, with no setting to change it.
+    const out = migrateProfiles({
+      Test: { catalogSettings: { notOnDeviceDisplay: 'mixed', stackCount: 2 } } as any
+    });
+    expect('notOnDeviceDisplay' in out.Test.catalogSettings).toBe(false);
+    expect(out.Test.catalogSettings.stackCount).toBe(2);
   });
 });

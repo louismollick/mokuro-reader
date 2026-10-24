@@ -1,13 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import Catalog from '$lib/components/Catalog.svelte';
-  import { enrichAllOrphanedVolumes } from '$lib/settings/volume-data';
-
-  onMount(() => {
-    // Enrich orphaned volumes when catalog loads
-    // This happens after users upload volumes
-    enrichAllOrphanedVolumes();
-  });
+  // Rows for series the synced progress references but this device has never
+  // seen are minted after every progress sync (`resolveSyncedProgress`), not
+  // from this mount — a view is not what decides when metadata converges.
 </script>
 
 <svelte:head>

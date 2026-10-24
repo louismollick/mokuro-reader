@@ -27,6 +27,7 @@ vi.mock('megajs', () => {
     files: Record<string, any>;
     sid = 'SID123';
     reload = vi.fn(async () => {});
+    on = vi.fn();
     constructor(options: any, cb?: (e: Error | null) => void) {
       storageState.lastOptions = options;
       this.files = storageState.files;
@@ -93,13 +94,18 @@ describe('MegaProvider.login()', () => {
     expect(storageState.lastOptions.secondFactorCode).toBe('654321');
   });
 
-  it('logs in with keepalive disabled (no crashing server-change poll)', async () => {
+  it('logs in with keepalive enabled and listens to storage change events', async () => {
+    // The sc long-poll keeps the local tree in sync and feeds the reactive
+    // cache. (Its old delete-event crash came from us manually removing nodes
+    // from storage.files — those manual removals are gone.)
     const provider = new MegaProvider();
     await provider.whenReady();
 
     await provider.login({ email: 'a@b.c', password: 'secret' });
 
-    expect(storageState.lastOptions.keepalive).toBe(false);
+    expect(storageState.lastOptions.keepalive).toBe(true);
+    const listened = (provider as any).storage.on.mock.calls.map((c: any[]) => c[0]);
+    expect(listened).toEqual(expect.arrayContaining(['add', 'move', 'delete', 'update']));
   });
 
   it('maps EMFAREQUIRED to a MFA_REQUIRED ProviderError', async () => {
@@ -176,6 +182,46 @@ describe('MegaProvider needs-attention', () => {
     const provider = new MegaProvider();
     await provider.whenReady();
     expect(provider.getLastUsername()).toBe('me@host.dev');
+  });
+});
+
+describe('MegaProvider getStatus().accountScope', () => {
+  it('is undefined before any login/session restore', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    expect(provider.getStatus().accountScope).toBeUndefined();
+  });
+
+  it('is `mega:<email>` after a successful login', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    expect(provider.getStatus().accountScope).toBe('mega:a@b.c');
+  });
+
+  it('lowercases the email so differently-cased logins share one cache scope', async () => {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    await provider.login({ email: 'A@B.COM', password: 'secret' });
+
+    expect(provider.getStatus().accountScope).toBe('mega:a@b.com');
+  });
+
+  it('is populated after restoring a session blob, without a fresh login', async () => {
+    localStorage.setItem(
+      'mega_session',
+      JSON.stringify({ key: 'K', sid: 'SID123', options: { email: 'restored@host.dev' } })
+    );
+
+    const provider = new MegaProvider();
+    await provider.whenReady();
+
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(provider.getStatus().accountScope).toBe('mega:restored@host.dev');
   });
 });
 
@@ -316,5 +362,284 @@ describe('MegaProvider.prepareUploadTarget()', () => {
     const result = await provider.prepareUploadTarget('My Series');
 
     expect(result).toEqual({ megaSeriesFolderNodeId: 'SERIES1' });
+  });
+});
+
+describe('MegaProvider.removeDirectoryIfEmpty()', () => {
+  async function providerWithSeriesFolder(serverNodes: any[]) {
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    const storage = (provider as any).storage;
+    const mokuroFolder = { name: 'mokuro-reader', directory: true, nodeId: 'root-1' };
+    const seriesFolder = {
+      name: 'Old Series',
+      directory: true,
+      nodeId: 'series-1',
+      parent: mokuroFolder,
+      delete: vi.fn((_permanent: boolean, cb: (e: Error | null) => void) => cb(null))
+    };
+    storage.files = { root: mokuroFolder, series: seriesFolder };
+    storage.api = {
+      request: vi.fn((_req: any, cb: (e: Error | null, r: any) => void) =>
+        cb(null, { f: serverNodes })
+      )
+    };
+    return { provider, seriesFolder, storage };
+  }
+
+  it('deletes the folder when the SERVER reports it empty', async () => {
+    const { provider, seriesFolder, storage } = await providerWithSeriesFolder([
+      { h: 'series-1' } // only the folder's own node comes back
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(storage.api.request).toHaveBeenCalledWith(
+      expect.objectContaining({ a: 'f', n: 'series-1' }),
+      expect.any(Function)
+    );
+    expect(seriesFolder.delete).toHaveBeenCalled();
+  });
+
+  it('does NOT delete when the server still reports contents (never a blind recursive delete)', async () => {
+    const { provider, seriesFolder } = await providerWithSeriesFolder([
+      { h: 'series-1' },
+      { h: 'file-9', p: 'series-1' } // a straggler another device just added
+    ]);
+
+    await provider.removeDirectoryIfEmpty('Old Series');
+
+    expect(seriesFolder.delete).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the folder does not exist', async () => {
+    const { provider, storage } = await providerWithSeriesFolder([]);
+    storage.files = { root: { name: 'mokuro-reader', directory: true, nodeId: 'root-1' } };
+
+    await expect(provider.removeDirectoryIfEmpty('Ghost Series')).resolves.toBeUndefined();
+    expect(storage.api.request).not.toHaveBeenCalled();
+  });
+});
+
+describe('MegaProvider ghost-node handling', () => {
+  // A "ghost" is a node deleted server-side that megajs never evicts from
+  // storage.files: its sc delete handler only unlinks parent.children, and
+  // reload() is purely additive (_importFile skips known handles). Ghosts
+  // made every sync fail: the pre-upload replace delete hit server ENOENT (-9)
+  // and the reload-based retry could never remove the ghost.
+
+  function makeMokuroFolder() {
+    return {
+      name: 'mokuro-reader',
+      directory: true,
+      upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+        // `timestamp` (epoch seconds) is the SERVER's stamp on the completed
+        // node — the same field listCloudVolumes maps to `modifiedTime`.
+        queueMicrotask(() => cb(null, { nodeId: 'fresh-node', timestamp: 1_780_000_000, size: 3 }));
+      })
+    } as any;
+  }
+
+  function makeFile(name: string, parent: any, deleteError: Error | null = null) {
+    return {
+      name,
+      directory: false,
+      parent,
+      delete: vi.fn((_force: boolean, cb: (e: Error | null) => void) => {
+        queueMicrotask(() => cb(deleteError));
+      })
+    } as any;
+  }
+
+  async function loginWithTree(files: Record<string, any>) {
+    storageState.files = files;
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  it('uploadFile tolerates ENOENT when deleting a ghost copy and still uploads', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile(
+      'volume-data.json',
+      folder,
+      new Error('ENOENT (-9): Object (typically, node or user) not found. Wrong password?')
+    );
+    const provider = await loginWithTree({ root: folder, ghost });
+
+    const uploaded = await provider.uploadFile('volume-data.json', new Uint8Array([1, 2, 3]));
+
+    expect(ghost.delete).toHaveBeenCalled();
+    expect(folder.upload).toHaveBeenCalledOnce();
+    // The result carries the node's SERVER timestamp as `modifiedTime`, so
+    // the upload-time cache entry needs no provisional client-clock stamp.
+    expect(uploaded).toEqual({
+      fileId: 'fresh-node',
+      modifiedTime: new Date(1_780_000_000 * 1000).toISOString(),
+      size: 3
+    });
+  });
+
+  it('uploadFile replaces every same-name copy, not just the first', async () => {
+    const folder = makeMokuroFolder();
+    const dupe1 = makeFile('volume-data.json', folder);
+    const dupe2 = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, dupe1, dupe2 });
+
+    await provider.uploadFile('volume-data.json', new Uint8Array([1]));
+
+    expect(dupe1.delete).toHaveBeenCalledOnce();
+    expect(dupe2.delete).toHaveBeenCalledOnce();
+    expect(folder.upload).toHaveBeenCalledOnce();
+  });
+
+  it('reinitialize rebuilds storage.files so server-deleted ghosts are evicted', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile('volume-data.json', folder);
+    const real = makeFile('real.cbz', folder);
+    const provider = await loginWithTree({ root: folder, ghost });
+    const storage = (provider as any).storage;
+
+    // Mirror megajs reload() semantics: additive import of the server's
+    // node set (which no longer contains the ghost).
+    storage.reload = vi.fn(async () => {
+      const server: Record<string, any> = { root: folder, real };
+      for (const [handle, node] of Object.entries(server)) {
+        if (!storage.files[handle]) storage.files[handle] = node;
+      }
+    });
+
+    await (provider as any).reinitialize();
+
+    expect(Object.keys(storage.files).sort()).toEqual(['real', 'root']);
+  });
+
+  it('reinitialize strips stale sc listeners before reloading (megajs stacks one per reload)', async () => {
+    const folder = makeMokuroFolder();
+    const provider = await loginWithTree({ root: folder });
+    const storage = (provider as any).storage;
+    storage.api = { removeAllListeners: vi.fn() };
+
+    await (provider as any).reinitialize();
+
+    expect(storage.api.removeAllListeners).toHaveBeenCalledWith('sc');
+  });
+
+  it('reinitialize keeps the previous tree when the reload fails transiently', async () => {
+    const folder = makeMokuroFolder();
+    const ghost = makeFile('volume-data.json', folder);
+    const provider = await loginWithTree({ root: folder, ghost });
+    const storage = (provider as any).storage;
+    storage.reload = vi.fn(async () => {
+      throw new Error('ETEMPUNAVAIL (-18): A temporary congestion or server malfunction');
+    });
+
+    await (provider as any).reinitialize();
+
+    expect(provider.isAuthenticated()).toBe(true);
+    expect(Object.keys(storage.files).sort()).toEqual(['ghost', 'root']);
+  });
+});
+
+describe('MegaProvider over-quota handling', () => {
+  it('uploadFile maps EOVERQUOTA to a typed QUOTA_EXCEEDED error with a friendly message', async () => {
+    const folder: any = {
+      name: 'mokuro-reader',
+      directory: true,
+      upload: vi.fn((_opts: any, _buf: any, cb: (e: Error | null, f?: any) => void) => {
+        queueMicrotask(() => cb(new Error('EOVERQUOTA (-17): Request over quota')));
+      })
+    };
+    storageState.files = { root: folder };
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+
+    await expect(
+      provider.uploadFile('volume-data.json', new Uint8Array([1]))
+    ).rejects.toMatchObject({
+      code: 'QUOTA_EXCEEDED',
+      message: expect.stringContaining('storage is full')
+    });
+  });
+});
+
+describe('MegaProvider.renameFile() — modifiedTime provenance', () => {
+  // A rename must never fabricate a client-clock `modifiedTime`: it changes
+  // no content, so the cache entry the shared rename layer writes back
+  // (unified-cloud-manager's replaceCachedFile) must carry the ORIGINAL
+  // file's real mtime — otherwise cloud-sidecar-stamps.ts would publish a
+  // client-clock stamp into series.json and trigger a spurious re-pull on
+  // the next listing.
+
+  function makeMokuroFolder() {
+    return { name: 'mokuro-reader', directory: true } as any;
+  }
+
+  function makeRenameableFile(parent: any) {
+    const file: any = {
+      nodeId: 'file-1',
+      name: 'Volume 1.cbz',
+      directory: false,
+      parent,
+      rename: vi.fn(async (newName: string) => {
+        file.name = newName;
+      }),
+      moveTo: vi.fn(async () => {})
+    };
+    return file;
+  }
+
+  async function loginWithTree(files: Record<string, any>) {
+    storageState.files = files;
+    const provider = new MegaProvider();
+    await provider.whenReady();
+    await provider.login({ email: 'a@b.c', password: 'secret' });
+    return provider;
+  }
+
+  it('preserves the source file’s real modifiedTime through a single-file rename (never the wall clock)', async () => {
+    const folder = makeMokuroFolder();
+    const file = makeRenameableFile(folder);
+    const provider = await loginWithTree({ root: folder, file });
+
+    const source = {
+      provider: 'mega' as const,
+      fileId: 'file-1',
+      path: 'Volume 1.cbz',
+      modifiedTime: '2020-01-01T00:00:00.000Z',
+      size: 100
+    };
+
+    const result = await provider.renameFile(source, 'Volume 2.cbz');
+
+    expect(file.rename).toHaveBeenCalledWith('Volume 2.cbz');
+    expect(result.path).toBe('Volume 2.cbz');
+    // MUST equal the ORIGINAL exactly — not "close to now".
+    expect(result.modifiedTime).toBe('2020-01-01T00:00:00.000Z');
+    expect(result.modifiedTimeProvisional).toBeUndefined();
+  });
+
+  it('keeps modifiedTimeProvisional through a rename when the source was only ever a client-clock guess', async () => {
+    const folder = makeMokuroFolder();
+    const file = makeRenameableFile(folder);
+    const provider = await loginWithTree({ root: folder, file });
+
+    const source = {
+      provider: 'mega' as const,
+      fileId: 'file-1',
+      path: 'Volume 1.cbz',
+      modifiedTime: '2020-01-01T00:00:00.000Z',
+      modifiedTimeProvisional: true,
+      size: 100
+    };
+
+    const result = await provider.renameFile(source, 'Volume 2.cbz');
+
+    expect(result.modifiedTime).toBe('2020-01-01T00:00:00.000Z');
+    expect(result.modifiedTimeProvisional).toBe(true);
   });
 });

@@ -2,10 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { zipManga, createArchiveBlob } from './zip';
 import { db } from '$lib/catalog/db';
 import { compressVolume } from './compress-volume';
+import { TextReader, ZipWriter } from '@zip.js/zip.js';
+import { parseSeriesFile, type SeriesFile } from '$lib/metadata/series-file';
 
 // Mock the database with v3 tables
+const layersToArray = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
 vi.mock('$lib/catalog/db', () => ({
   db: {
+    volumes: {
+      toArray: vi.fn().mockResolvedValue([]),
+      get: vi.fn()
+    },
     volume_ocr: {
       get: vi.fn()
     },
@@ -13,6 +20,17 @@ vi.mock('$lib/catalog/db', () => ({
       get: vi.fn()
     }
   }
+}));
+
+// Layers are read through the layer store (metadata + pages joined).
+vi.mock('$lib/catalog/layer-store', () => ({ listLayersWithPages: layersToArray }));
+
+vi.mock('$lib/metadata/store', () => ({
+  getSeriesMetadataForTitle: vi.fn().mockResolvedValue(undefined)
+}));
+
+vi.mock('$lib/metadata/series-index', () => ({
+  getSeriesIndex: vi.fn().mockResolvedValue(undefined)
 }));
 
 // Mock the backup queue to avoid Worker issues
@@ -23,12 +41,16 @@ vi.mock('./backup-queue', () => ({
 }));
 
 // Store the actual compressVolume calls for verification
-const compressVolumeCalls: { metadata: unknown; filesData: unknown[] }[] = [];
+const compressVolumeCalls: {
+  metadata: unknown;
+  filesData: unknown[];
+  options?: { seriesFile?: unknown; extraFiles?: { name: string }[] };
+}[] = [];
 
 // Mock the compression module to capture calls
 vi.mock('./compress-volume', () => ({
-  compressVolume: vi.fn().mockImplementation((title, metadata, filesData) => {
-    compressVolumeCalls.push({ metadata, filesData });
+  compressVolume: vi.fn().mockImplementation((title, metadata, filesData, _onProgress, options) => {
+    compressVolumeCalls.push({ metadata, filesData, options });
     return Promise.resolve(new Uint8Array([1, 2, 3]));
   })
 }));
@@ -36,6 +58,7 @@ vi.mock('./compress-volume', () => ({
 // Mock @zip.js/zip.js to avoid real compression
 vi.mock('@zip.js/zip.js', () => ({
   BlobReader: vi.fn(),
+  BlobWriter: vi.fn(),
   Uint8ArrayWriter: vi.fn(),
   TextReader: vi.fn(),
   ZipWriter: vi.fn().mockImplementation(() => ({
@@ -204,6 +227,89 @@ describe('zipManga', () => {
   });
 });
 
+describe('series.json in exported archives', () => {
+  const seriesVolume = {
+    volume_uuid: 'vol-1-uuid',
+    series_uuid: 'series-uuid',
+    series_title: 'Test Manga',
+    volume_title: 'Volume 1',
+    mokuro_version: '1.0',
+    character_count: 100,
+    page_count: 1,
+    page_char_counts: [100] as number[]
+  };
+
+  const secondVolume = {
+    ...seriesVolume,
+    volume_uuid: 'vol-2-uuid',
+    volume_title: 'Volume 2'
+  };
+
+  const ocr = {
+    volume_uuid: 'vol-1-uuid',
+    pages: [{ img_path: 'page1.jpg', img_width: 100, img_height: 100, blocks: [] }]
+  };
+
+  const files = {
+    volume_uuid: 'vol-1-uuid',
+    files: { 'page1.jpg': new Blob(['image'], { type: 'image/jpeg' }) }
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    compressVolumeCalls.length = 0;
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.toArray.mockResolvedValue([seriesVolume, secondVolume]);
+    // @ts-expect-error - Mock type mismatch
+    db.volume_ocr.get.mockResolvedValue(ocr);
+    // @ts-expect-error - Mock type mismatch
+    db.volume_files.get.mockResolvedValue(files);
+  });
+
+  it('hands the single-volume archive the series file, indexing every local volume', async () => {
+    await createArchiveBlob([seriesVolume]);
+
+    expect(compressVolumeCalls).toHaveLength(1);
+    const seriesFile = compressVolumeCalls[0].options?.seriesFile as SeriesFile;
+    expect(seriesFile.series_title).toBe('Test Manga');
+    expect(seriesFile.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1-uuid', 'vol-2-uuid']);
+    // Round-trips through the parser the importer uses.
+    expect(parseSeriesFile(JSON.parse(JSON.stringify(seriesFile)))).toEqual(seriesFile);
+  });
+
+  it('writes series.json at the root of a multi-volume series archive', async () => {
+    await createArchiveBlob([seriesVolume, secondVolume], 'Test Manga');
+
+    const writer = vi.mocked(ZipWriter).mock.results[0].value;
+    const entryPaths = writer.add.mock.calls.map((call: unknown[]) => call[0]);
+    expect(entryPaths.filter((path: string) => path === 'series.json')).toHaveLength(1);
+
+    const texts = vi.mocked(TextReader).mock.calls.map((call) => call[0] as string);
+    const written = texts
+      .map((text) => {
+        try {
+          return parseSeriesFile(JSON.parse(text));
+        } catch {
+          return undefined;
+        }
+      })
+      .find((file) => file !== undefined);
+    expect(written?.series_title).toBe('Test Manga');
+    expect(written?.volumes.map((v) => v.volume_uuid)).toEqual(['vol-1-uuid', 'vol-2-uuid']);
+  });
+
+  it('writes no series.json when the series has nothing to index', async () => {
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.toArray.mockResolvedValue([]);
+
+    await createArchiveBlob([seriesVolume, secondVolume], 'Test Manga');
+
+    const writer = vi.mocked(ZipWriter).mock.results[0].value;
+    const entryPaths = writer.add.mock.calls.map((call: unknown[]) => call[0]);
+    expect(entryPaths).not.toContain('series.json');
+  });
+});
+
 describe('export data integrity', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -350,5 +456,121 @@ describe('export data integrity', () => {
 
     // Should have all files
     expect(compressVolumeCalls[0].filesData).toHaveLength(2);
+  });
+});
+
+describe('OCR layers in exported archives', () => {
+  const seriesVolume = {
+    volume_uuid: 'vol-1-uuid',
+    series_uuid: 'series-uuid',
+    series_title: 'Test Manga',
+    volume_title: 'Volume 1',
+    mokuro_version: '1.0',
+    character_count: 100,
+    page_count: 1,
+    page_char_counts: [100] as number[]
+  };
+  const secondVolume = { ...seriesVolume, volume_uuid: 'vol-2-uuid', volume_title: 'Volume 2' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.toArray.mockResolvedValue([seriesVolume, secondVolume]);
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.get.mockImplementation(async (uuid: string) =>
+      [seriesVolume, secondVolume].find((v) => v.volume_uuid === uuid)
+    );
+    // @ts-expect-error - Mock type mismatch
+    db.volume_ocr.get.mockResolvedValue({
+      volume_uuid: 'vol-1-uuid',
+      pages: [{ img_path: 'page1.jpg', img_width: 100, img_height: 100, blocks: [] }]
+    });
+    // @ts-expect-error - Mock type mismatch
+    db.volume_files.get.mockResolvedValue({ volume_uuid: 'vol-1-uuid', files: {} });
+    layersToArray.mockResolvedValue([
+      {
+        volume_uuid: 'vol-1-uuid',
+        layer_id: 'gcv',
+        name: 'Cloud Vision',
+        kind: 'ocr',
+        engine: 'gcv',
+        created_at: 't',
+        updated_at: 't',
+        pages: [{ img_path: 'page1.jpg', img_width: 100, img_height: 100, blocks: [] }]
+      }
+    ]);
+  });
+
+  it('writes each volume\u2019s layer files beside its .mokuro in a multi-volume archive', async () => {
+    await createArchiveBlob([seriesVolume, secondVolume] as never, 'Test Manga');
+    const writer = vi.mocked(ZipWriter).mock.results[0].value as { add: ReturnType<typeof vi.fn> };
+    const names = writer.add.mock.calls.map(([name]) => name as string);
+    expect(names).toContain('Volume 1.mokuro');
+    expect(names).toContain('Volume 1.gcv.mokuro');
+    expect(names).toContain('Volume 2.gcv.mokuro');
+  });
+
+  it('leaves the layer files out when sidecars are excluded', async () => {
+    await createArchiveBlob([seriesVolume, secondVolume] as never, 'Test Manga', {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    const writer = vi.mocked(ZipWriter).mock.results[0].value as { add: ReturnType<typeof vi.fn> };
+    const names = writer.add.mock.calls.map(([name]) => name as string);
+    expect(names).not.toContain('Volume 1.gcv.mokuro');
+  });
+
+  // The one-volume archive is built by `compressVolume`, not the multi-volume
+  // writer, so it has to be handed the same sidecars explicitly.
+  const singleVolumeExtras = () =>
+    (compressVolumeCalls[0].options?.extraFiles ?? []).map((file) => file.name);
+
+  it('hands a single-volume archive the volume\u2019s layer files', async () => {
+    compressVolumeCalls.length = 0;
+    await createArchiveBlob([seriesVolume] as never, 'Test Manga', {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    expect(compressVolumeCalls).toHaveLength(1);
+    expect(singleVolumeExtras()).toEqual(['Volume 1.gcv.mokuro']);
+  });
+
+  it('keeps the layer files in a single-volume archive when no options are given', async () => {
+    compressVolumeCalls.length = 0;
+    await createArchiveBlob([seriesVolume] as never);
+    expect(singleVolumeExtras()).toEqual(['Volume 1.gcv.mokuro']);
+  });
+
+  it('leaves the layer files out of a single-volume archive when sidecars are excluded', async () => {
+    compressVolumeCalls.length = 0;
+    await createArchiveBlob([seriesVolume] as never, 'Test Manga', {
+      includeSidecars: false,
+      embedSidecarsInArchive: false
+    });
+    expect(compressVolumeCalls).toHaveLength(1);
+    expect(singleVolumeExtras()).toEqual([]);
+  });
+
+  it('embeds the thumbnail sidecar in a single-volume archive only when asked to', async () => {
+    const withThumbnail = {
+      ...seriesVolume,
+      thumbnail: new File(['thumb'], 'thumb', { type: 'image/webp' })
+    };
+    // @ts-expect-error - Mock type mismatch
+    db.volumes.get.mockResolvedValue(withThumbnail);
+
+    compressVolumeCalls.length = 0;
+    await createArchiveBlob([withThumbnail] as never, 'Test Manga', {
+      includeSidecars: true,
+      embedSidecarsInArchive: true
+    });
+    expect(singleVolumeExtras()).toEqual(['Volume 1.webp', 'Volume 1.gcv.mokuro']);
+
+    compressVolumeCalls.length = 0;
+    await createArchiveBlob([withThumbnail] as never, 'Test Manga', {
+      includeSidecars: true,
+      embedSidecarsInArchive: false
+    });
+    expect(singleVolumeExtras()).toEqual(['Volume 1.gcv.mokuro']);
   });
 });
