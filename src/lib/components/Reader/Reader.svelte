@@ -470,7 +470,12 @@
     activityTracker.setTimeoutDuration($settings.inactivityTimeoutMinutes);
 
     // Enter fullscreen on initial load if defaultFullscreen setting is enabled
-    if ($settings.defaultFullscreen && !document.fullscreenElement) {
+    // (iOS Safari has no element fullscreen API.)
+    if (
+      $settings.defaultFullscreen &&
+      !document.fullscreenElement &&
+      document.documentElement.requestFullscreen
+    ) {
       document.documentElement.requestFullscreen().catch((err) => {
         console.error('Failed to enter fullscreen:', err);
       });
