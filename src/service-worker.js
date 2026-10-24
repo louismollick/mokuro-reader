@@ -4,10 +4,18 @@ import { build, files, version } from '$service-worker';
 // Create a unique cache name for this deployment
 const CACHE = `cache-${version}`;
 
+// Panel detector model and onnxruntime wasm are large and only needed once a user mines a card:
+// skip the install-time precache, and keep them in a separate cache that survives deploys.
+// Filled on first fetch. Both URLs are content-hashed by the build (worker `?url` imports), so new
+// weights or a new onnxruntime are new entries. Not pruned: worker assets are absent from `build`,
+// so superseded files stay until site data is cleared.
+const LARGE_ASSETS_CACHE = 'mokuro-large-assets-v1';
+const isLargeAsset = (path) => path.endsWith('.onnx') || path.endsWith('.wasm');
+
 const ASSETS = [
   ...build, // the app itself
   ...files // everything in `static`
-];
+].filter((path) => !isLargeAsset(path));
 
 self.addEventListener('install', (event) => {
   // Create a new cache and add all files to it
@@ -34,7 +42,7 @@ self.addEventListener('activate', (event) => {
   // Remove previous cached data from disk
   async function deleteOldCaches() {
     for (const key of await caches.keys()) {
-      if (key !== CACHE) await caches.delete(key);
+      if (key !== CACHE && key !== LARGE_ASSETS_CACHE) await caches.delete(key);
     }
   }
 
@@ -86,6 +94,19 @@ self.addEventListener('fetch', (event) => {
     }
 
     const cache = await caches.open(CACHE);
+
+    // Large ML assets: cache-first, filled on first fetch (no size limit)
+    if (isLargeAsset(url.pathname)) {
+      const largeCache = await caches.open(LARGE_ASSETS_CACHE);
+      const cachedResponse = await largeCache.match(event.request);
+      if (cachedResponse) return cachedResponse;
+      const response = await fetch(event.request);
+      if (response.status === 200) {
+        // Keeps the worker alive until the (large) body is stored; a failed put only loses the cache.
+        event.waitUntil(largeCache.put(event.request, response.clone()).catch(() => {}));
+      }
+      return response;
+    }
 
     // `build`/`files` can always be served from the cache
     if (ASSETS.includes(url.pathname)) {

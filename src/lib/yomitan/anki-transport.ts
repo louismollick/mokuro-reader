@@ -6,12 +6,13 @@
  * self-signed setups keep working exactly as they do for mokuro's other Anki features.
  *
  * `addNote` first creates the note's deck, and replaces the note's tags with mokuro's one global
- * tag template (`ankiConnectSettings.tags`, shared with Capture) resolved for the open volume. Capabilities are trimmed for
- * AnkiConnect Android (`isAndroidMode`), which does not implement `canAddNotesWithErrorDetail`,
- * `notesInfo` or `guiBrowseNotes`.
+ * tag template (`ankiConnectSettings.tags`, shared with Capture) resolved for the open volume.
+ * `storeMediaFile` is passed through, so the controller can store the Panel Crop and audio.
+ * Capabilities are trimmed for AnkiConnect Android (`isAndroidMode`), which does not implement
+ * `canAddNotesWithErrorDetail`, `notesInfo` or `guiBrowseNotes`.
  */
 import { get } from 'svelte/store';
-import type { AnkiTransport } from 'yomitan-core';
+import type { AnkiMediaSource, AnkiTransport } from 'yomitan-core';
 import { createAnkiConnectTransport } from 'yomitan-core';
 import { isAndroidMode, resolveDynamicTags, type VolumeMetadata } from '$lib/anki-connect';
 import { settings } from '$lib/settings';
@@ -86,8 +87,12 @@ function resolveNoteTags(template: string, volumeMetadata: VolumeMetadata): stri
  * Builds mokuro's AnkiTransport for the current AnkiConnect URL and mode. Call it fresh whenever
  * the URL setting or Android override changes; it is cheap (no connection is opened eagerly).
  * `volumeMetadata` (the open volume's titles) fills the tag template's `{series}` and `{volume}`.
+ * `onMediaStored` hears of every file stored in Anki, under the name it was stored as.
  */
-export function createMokuroAnkiTransport(volumeMetadata: VolumeMetadata = {}): AnkiTransport {
+export function createMokuroAnkiTransport(
+  volumeMetadata: VolumeMetadata = {},
+  onMediaStored?: (fileName: string, source: AnkiMediaSource) => void
+): AnkiTransport {
   const url = get(settings).ankiConnectSettings.url || DEFAULT_URL;
   const mokuroFetch = createMokuroFetch(url);
   const base = createAnkiConnectTransport({
@@ -107,7 +112,13 @@ export function createMokuroAnkiTransport(volumeMetadata: VolumeMetadata = {}): 
     },
     updateNoteFields: (note) => base.updateNoteFields(note),
     canAddNotes: (notes) => base.canAddNotes(notes),
-    findNoteIds: (notes) => base.findNoteIds(notes)
+    findNoteIds: (notes) => base.findNoteIds(notes),
+    // Lets the display controller store the Panel Crop and audio for `{screenshot}` and `{audio}`.
+    async storeMediaFile(fileName, source) {
+      const stored = await base.storeMediaFile(fileName, source);
+      if (stored) onMediaStored?.(stored, source);
+      return stored;
+    }
   };
 
   // AnkiConnect Android lacks these actions; leave them out so the display controller degrades the

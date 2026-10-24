@@ -3,6 +3,7 @@
   import { createDisplayController } from 'yomitan-core';
   import type { AnkiNoteContext, SegmentToken, TermDictionaryEntry, Yomitan } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
+  import type { Rect } from '$lib/panel/yolo';
   import { settings } from '$lib/settings';
   import { getYomitan } from '$lib/yomitan/client';
   import { createMokuroAnkiTransport } from '$lib/yomitan/anki-transport';
@@ -20,7 +21,13 @@
     startHistory,
     type LookupHistory
   } from '$lib/yomitan/lookup-session';
+  import { MinedPanels } from '$lib/yomitan/mined-panels.svelte';
+  import type { MinedPanel } from '$lib/yomitan/mining';
   import { NoteStates } from '$lib/yomitan/note-states';
+  import { profileScreenshotFields, replacePanel } from '$lib/yomitan/panel-adjust';
+  import { cropRect } from '$lib/panel/panel-crop';
+  import { warmUpPanelDetector } from '$lib/panel/detect-panels';
+  import { showSnackbar } from '$lib/util/snackbar';
   import { pickWordIndex } from '$lib/yomitan/word-pick';
   import KanjiView from './KanjiView.svelte';
   import SentenceStrip from './SentenceStrip.svelte';
@@ -44,6 +51,7 @@
     tokens: SegmentToken[];
     glossaryStyle: { css: string; attributes: Record<string, string> };
     noteStates: NoteStates;
+    minedPanels: MinedPanels;
     /** Merged entries per looked-up text: one per word, with all its spellings and readings. */
     merged: Map<string, Promise<TermDictionaryEntry[]>>;
     loadKanji: ReturnType<typeof createKanjiInfoLoader>;
@@ -63,6 +71,7 @@
     status = 'loading';
     session = null;
     history = startHistory(null);
+    adjusting = null;
     expanded = false;
 
     try {
@@ -93,6 +102,7 @@
         tokens,
         glossaryStyle: { css, attributes: client.render.attributes() },
         noteStates: new NoteStates(),
+        minedPanels: new MinedPanels(),
         merged: new Map(),
         loadKanji: createKanjiInfoLoader((character) => client.lookup.kanji(character))
       };
@@ -150,6 +160,38 @@
     );
   });
 
+  // ---- Panel Crop ------------------------------------------------------------------------
+
+  // Load the panel model in idle time so the first Mining isn't slowed by it.
+  $effect(() => {
+    if (request && ankiEnabled) warmUpPanelDetector();
+  });
+
+  /** The Word whose Panel Crop the user is adjusting. */
+  let adjusting = $state.raw<{ entry: TermDictionaryEntry; panel: MinedPanel } | null>(null);
+
+  /** Re-cuts the Panel Crop at `rect` and puts it on the note, then updates the thumbnail. */
+  async function adjustPanel(rect: Rect) {
+    const current = session;
+    const target = adjusting;
+    adjusting = null;
+    if (!current || !target) return;
+    const { panel, entry } = target;
+    try {
+      const fields = profileScreenshotFields(current.client, panel.cardFormatIndex);
+      const image = await cropRect(panel.source.pageImage, rect);
+      const fileName = await replacePanel(panel.noteId, fields, panel.fileName, image);
+      if (fileName) {
+        current.minedPanels.set(entry, { ...panel, fileName, rect, image });
+        showSnackbar('Updated the Panel Crop.');
+        return;
+      }
+    } catch (error) {
+      console.error('Panel Crop update failed:', error);
+    }
+    showSnackbar('Could not update the Panel Crop.');
+  }
+
   // ---- Views -----------------------------------------------------------------------------
 
   /** The Sentence and page details Anki notes get for a Word at `start` in the Text Box. */
@@ -179,8 +221,11 @@
   let controller = $derived.by(() => {
     void ankiTransportKey;
     if (!ankiEnabled || !session) return null;
-    return createDisplayController(session.client, {
-      anki: createMokuroAnkiTransport(volumeMetadata)
+    const { client, minedPanels } = session;
+    return createDisplayController(client, {
+      anki: createMokuroAnkiTransport(volumeMetadata, (fileName, source) =>
+        minedPanels.screenshots.record(fileName, source)
+      )
     });
   });
   let extraMarkers = $derived({
@@ -192,6 +237,11 @@
     history = pushView(history, { kind: 'kanji', character });
     // A Kanji View is taller than the peek and scrolls only in the full sheet.
     if (!desktop) expanded = true;
+  }
+
+  function startAdjust(minedPanels: MinedPanels, entry: TermDictionaryEntry) {
+    const panel = minedPanels.get(entry);
+    if (panel) adjusting = { entry, panel };
   }
 
   function openTerm(query: string) {
@@ -286,7 +336,8 @@
     if (!request || event.key !== 'Escape') return;
     event.stopPropagation();
     event.preventDefault();
-    onClose();
+    if (adjusting) adjusting = null;
+    else onClose();
   }
 
   let scroller: HTMLDivElement | undefined = $state();
@@ -341,7 +392,8 @@
       {:else if status === 'error'}
         <p class="text-[13px] text-[#9a9a9a]">Lookup failed.</p>
       {:else if session}
-        {@const { client, box, tokens, glossaryStyle, noteStates, loadKanji } = session}
+        {@const { client, box, tokens, glossaryStyle, noteStates, minedPanels, loadKanji } =
+          session}
         {#if view.kind === 'kanji'}
           {#key view.character}
             <KanjiView
@@ -372,6 +424,9 @@
                 noteContext={noteContextFor(client, box, token.text, token.range.start)}
                 {extraMarkers}
                 {noteStates}
+                panelSource={session.request.panel}
+                {minedPanels}
+                onAdjust={(entry) => startAdjust(minedPanels, entry)}
                 onKanji={openKanji}
                 onQuery={openTerm}
               />
@@ -392,6 +447,9 @@
                 noteContext={noteContextFor(client, box, view.query, box.text.indexOf(view.query))}
                 {extraMarkers}
                 {noteStates}
+                panelSource={session.request.panel}
+                {minedPanels}
+                onAdjust={(entry) => startAdjust(minedPanels, entry)}
                 onKanji={openKanji}
                 onQuery={openTerm}
               />
@@ -406,6 +464,17 @@
     </div>
   </div>
 </aside>
+
+{#if adjusting}
+  {#await import('./PanelAdjust.svelte') then { default: PanelAdjust }}
+    <PanelAdjust
+      image={adjusting.panel.source.pageImage}
+      rect={adjusting.panel.rect}
+      onConfirm={adjustPanel}
+      onCancel={() => (adjusting = null)}
+    />
+  {/await}
+{/if}
 
 <style>
   .sheet {

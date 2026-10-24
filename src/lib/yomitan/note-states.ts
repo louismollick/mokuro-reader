@@ -1,4 +1,4 @@
-import { primaryHeadword } from './entry-data';
+import { headwordKey } from './entry-data';
 import type { AnkiNoteContext, DisplayController, TermDictionaryEntry } from 'yomitan-core';
 
 export interface NoteTarget {
@@ -18,18 +18,13 @@ export interface NoteTarget {
 export class NoteStates {
   private cache = new Map<string, Promise<NoteTarget | null>>();
 
-  private key(entry: TermDictionaryEntry) {
-    const { term, reading } = primaryHeadword(entry);
-    return `${term}|${reading}`;
-  }
-
   get(
     controller: DisplayController,
     entry: TermDictionaryEntry,
     context: AnkiNoteContext,
     extraMarkers: Record<string, string>
   ): Promise<NoteTarget | null> {
-    const key = this.key(entry);
+    const key = headwordKey(entry);
     let target = this.cache.get(key);
     if (!target) {
       target = controller.getNoteStates([entry], context, extraMarkers).then(([state]) => {
@@ -52,7 +47,7 @@ export class NoteStates {
 
   /** The entry was just saved. */
   markAdded(entry: TermDictionaryEntry) {
-    const key = this.key(entry);
+    const key = headwordKey(entry);
     const known = this.cache.get(key);
     this.cache.set(
       key,

@@ -1,4 +1,5 @@
 import type { TextBoxTap } from '$lib/reader/input/text-box-tap';
+import type { PanelSource } from './mining';
 
 /** A Tap Lookup: the tapped Text Box, where in it, and its lines as rendered. */
 export interface LookupRequest extends TextBoxTap {
@@ -8,4 +9,6 @@ export interface LookupRequest extends TextBoxTap {
   lines: string[];
   /** Identifies the Text Box's text (volume, page, block) for the segmentation cache. */
   boxKey: string;
+  /** Where Mining cuts this Text Box's Panel Crop from; null when the page image is missing. */
+  panel: PanelSource | null;
 }

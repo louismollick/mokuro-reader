@@ -86,6 +86,7 @@
   import { needsDownload } from '$lib/catalog/volume-state';
   import { calculateForwardTarget, calculateBackwardTarget } from '$lib/reader/page-nav';
   import { ImageCache } from '$lib/reader/image-cache';
+  import { panelSourceFor } from '$lib/yomitan/mining';
   import type LookupSheetComponent from '$lib/components/Lookup/LookupSheet.svelte';
   import type { LookupRequest } from '$lib/yomitan/lookup-request';
   import type { TextBoxTap } from '$lib/reader/input/text-box-tap';
@@ -1222,14 +1223,19 @@
     // on screen, on one of the pages being shown.
     const shown = $settings.continuousScroll || pageIndex === index || pageIndex === index + 1;
     if (!tap.textBox.isConnected || !shown) return;
-    const lines = pages[pageIndex]?.blocks[blockIndex]?.lines.map(processLine);
+    const ocrPage = pages[pageIndex];
+    const block = ocrPage?.blocks[blockIndex];
+    const lines = block?.lines.map(processLine);
     if (!lines?.some((line) => line.trim())) return;
 
     lookupRequest = {
       ...tap,
       id: ++lookupCount,
       lines,
-      boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`
+      boxKey: `${volume.volume_uuid}|${pageIndex}|${blockIndex}`,
+      panel: volumeData?.files
+        ? panelSourceFor(volumeData.files, pages, pageIndex, blockIndex)
+        : null
     };
     if (!LookupSheet) {
       import('$lib/components/Lookup/LookupSheet.svelte').then((module) => {

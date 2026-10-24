@@ -175,6 +175,7 @@
         ['ExpressionFurigana', '{furigana-plain}'],
         ['ExpressionReading', '{reading}'],
         ['ExpressionAudio', '{audio}'],
+        ['Picture', '{screenshot}'],
         ['SelectionText', '{popup-selection-text}'],
         ['Sentence', '{cloze-prefix}<b>{cloze-body}</b>{cloze-suffix}'],
         ['Glossary', '{glossary}'],
@@ -182,7 +183,7 @@
         ['PitchCategories', '{pitch-accent-categories}'],
         ['Frequency', '{frequencies}'],
         ['FreqSort', '{frequency-harmonic-rank}'],
-        ['MiscInfo', '{document-title}']
+        ['MiscInfo', '{series} {volume}']
       ];
 
       for (const [fieldName, value] of lapisMappings) {

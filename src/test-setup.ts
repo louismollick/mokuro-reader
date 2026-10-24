@@ -1,7 +1,7 @@
 // Vitest setup file for global test configuration
 import { beforeEach, vi } from 'vitest';
-// @ts-expect-error - no @types/node in this browser-focused project; Node provides this
-// module (and the Blob/File it exports) at runtime regardless.
+// Node's Blob/File, which (unlike jsdom's) implement `arrayBuffer()`. `@types/node` comes in with
+// onnxruntime-web.
 import { Blob as NodeBlob, File as NodeFile } from 'node:buffer';
 
 // Use Node's native Blob/File instead of jsdom's for jsdom environment
