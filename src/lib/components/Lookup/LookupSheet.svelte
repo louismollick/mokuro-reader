@@ -474,6 +474,13 @@
   let peekHeight = $state(MIN_PEEK);
   /** Whether the last run measured the peek's own layout (see below). */
   let measuringPeek = false;
+  let content: HTMLDivElement | undefined = $state();
+
+  function fitPeek(height: number) {
+    const fit = Math.round(Math.max(height + HANDLE_HEIGHT, MIN_PEEK));
+    if (fit > peekHeight) peekHeight = fit;
+  }
+
   $effect(() => {
     const height = contentHeight;
     if (!request) {
@@ -486,13 +493,16 @@
       return;
     }
     // Entering the peek (the sheet collapsing, or the first view showing), `contentHeight` still
-    // holds the previous layout; it is measured again after the next layout, which re-runs this.
+    // holds the previous layout. Measure the content itself a frame later, once the peek's layout
+    // (and Glossary's cut) is in, whether or not its height changed.
     if (!measuringPeek) {
       measuringPeek = true;
-      return;
+      const frame = requestAnimationFrame(() => {
+        if (content) fitPeek(content.offsetHeight);
+      });
+      return () => cancelAnimationFrame(frame);
     }
-    const fit = Math.round(Math.max(height + HANDLE_HEIGHT, MIN_PEEK));
-    if (fit > untrack(() => peekHeight)) peekHeight = fit;
+    untrack(() => fitPeek(height));
   });
   /** The peek as shown: capped by the current viewport, so a rotation or keyboard can't break it. */
   let visiblePeek = $derived(Math.round(Math.min(peekHeight, viewportHeight * MAX_PEEK_SHARE)));
@@ -595,7 +605,7 @@
     style:max-height={compact && !dragging ? `${visiblePeek - HANDLE_HEIGHT}px` : undefined}
     aria-busy={loading}
   >
-    <div bind:clientHeight={contentHeight} class="content">
+    <div bind:this={content} bind:clientHeight={contentHeight} class="content">
       {#if status === 'no-dictionaries'}
         <p class="text-[13px] text-gray-400">
           No dictionaries enabled. Add them in Settings &gt; Yomitan.
