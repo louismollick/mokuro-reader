@@ -135,7 +135,7 @@
       session = current;
       status = 'ready';
       scrollStack = [];
-      navigate(startHistory(offset === null ? null : pickWordIndex(tokens, offset)));
+      navigate(current, startHistory(offset === null ? null : pickWordIndex(tokens, offset)));
     } catch (error) {
       if (id !== generation) return;
       console.error('Tap Lookup failed:', error);
@@ -154,6 +154,8 @@
 
   /** How long the Anki check may hold a view back, so its button appears in its real state. */
   const NOTE_STATE_GRACE_MS = 300;
+  /** Anki checks a view has already waited for. */
+  const graced = new WeakSet<Promise<unknown>>();
   /** A view that loads faster than this appears at once, without fading in. */
   const FADE_AFTER_MS = 100;
   let navigation = 0;
@@ -164,9 +166,7 @@
    * Asks for `next`; the sheet keeps showing the current view until `next` has loaded. Then it
    * scrolls to `scrollTop`, and opens the full sheet if `expand`.
    */
-  function navigate(next: LookupHistory, { scrollTop = 0, expand = false } = {}) {
-    const current = session;
-    if (!current) return;
+  function navigate(current: Session, next: LookupHistory, { scrollTop = 0, expand = false } = {}) {
     history = next;
     const id = ++navigation;
     const started = performance.now();
@@ -182,14 +182,19 @@
             target?.text ?? '',
             view.kind === 'box' ? (view.wordIndex ?? undefined) : undefined
           );
-          // The first entry is the one in view; the others ask Anki when they appear.
+          // The first entry is the one in view; the others ask Anki when they appear. A check
+          // gets its grace once: a hung Anki must not hold back every later view.
           const states = data.entries
             .slice(0, 1)
-            .map((entry) => current.noteStates.get(active, entry, context, extraMarkers));
-          await Promise.race([
-            Promise.allSettled(states),
-            new Promise((resolve) => setTimeout(resolve, NOTE_STATE_GRACE_MS))
-          ]);
+            .map((entry) => current.noteStates.get(active, entry, context, extraMarkers))
+            .filter((state) => !graced.has(state));
+          states.forEach((state) => graced.add(state));
+          if (states.length > 0) {
+            await Promise.race([
+              Promise.allSettled(states),
+              new Promise((resolve) => setTimeout(resolve, NOTE_STATE_GRACE_MS))
+            ]);
+          }
         }
         return data;
       })
@@ -225,6 +230,7 @@
       session = null;
       shown = null;
       history = startHistory(null);
+      expanded = false;
       return;
     }
     untrack(() => void begin(request));
@@ -349,9 +355,26 @@
   /** Scroll positions of the views under the current one, restored on the way back. */
   let scrollStack: number[] = [];
 
+  /**
+   * The view on screen, made the current one: controls act on what the user sees. If a new Tap
+   * Lookup is still loading behind it, the user moved on from that tap, so it is dropped.
+   */
+  function displayed(): Shown | null {
+    if (!shown) return null;
+    if (session !== shown.session || status !== 'ready') {
+      generation++;
+      session = shown.session;
+      status = 'ready';
+    }
+    return shown;
+  }
+
   function push(next: LookupView, expand = false) {
-    scrollStack = [...scrollStack.slice(0, history.length - 1), scroller?.scrollTop ?? 0];
-    navigate(pushView(history, next), { expand });
+    const current = displayed();
+    if (!current) return;
+    const depth = current.history.length;
+    scrollStack = [...scrollStack.slice(0, depth - 1), scroller?.scrollTop ?? 0];
+    navigate(current.session, pushView(current.history, next), { expand });
   }
 
   function openKanji(character: string) {
@@ -360,8 +383,10 @@
   }
 
   function selectBoxWord(index: number) {
+    const current = displayed();
+    if (!current) return;
     scrollStack = [];
-    navigate(selectWord(index));
+    navigate(current.session, selectWord(index));
   }
 
   function startAdjust(minedPanels: MinedPanels, entry: TermDictionaryEntry) {
@@ -374,8 +399,10 @@
   }
 
   function back() {
-    const next = popView(history);
-    navigate(next, { scrollTop: scrollStack[next.length - 1] ?? 0 });
+    const current = displayed();
+    if (!current) return;
+    const next = popView(current.history);
+    navigate(current.session, next, { scrollTop: scrollStack[next.length - 1] ?? 0 });
   }
 
   // ---- Sheet geometry and drag -----------------------------------------------------------
@@ -409,14 +436,19 @@
    * the content.
    */
   let open = $state(false);
+  /** When the sheet was asked to open: the empty-open deadline counts from here. */
+  let openRequestedAt: number | null = null;
   $effect(() => {
     if (!request) {
       open = false;
+      openRequestedAt = null;
       return;
     }
     if (untrack(() => open)) return;
-    if (shown === null && status === 'loading') {
-      const timer = setTimeout(() => (open = true), OPEN_EMPTY_AFTER_MS);
+    openRequestedAt ??= performance.now();
+    if (shown === null && (status === 'loading' || status === 'ready')) {
+      const left = OPEN_EMPTY_AFTER_MS - (performance.now() - openRequestedAt);
+      const timer = setTimeout(() => (open = true), Math.max(0, left));
       return () => clearTimeout(timer);
     }
     // Two frames: the content's height is measured (ResizeObserver) between them.
@@ -446,14 +478,14 @@
       return;
     }
     if (!compact || !shown) return;
-    const fit = Math.round(
-      Math.min(Math.max(contentHeight + HANDLE_HEIGHT, MIN_PEEK), viewportHeight * MAX_PEEK_SHARE)
-    );
+    const fit = Math.round(Math.max(contentHeight + HANDLE_HEIGHT, MIN_PEEK));
     if (fit > untrack(() => peekHeight)) peekHeight = fit;
   });
+  /** The peek as shown: capped by the current viewport, so a rotation or keyboard can't break it. */
+  let visiblePeek = $derived(Math.round(Math.min(peekHeight, viewportHeight * MAX_PEEK_SHARE)));
   let transform = $derived.by(() => {
     if (desktop) return `translateX(${open ? 0 : 100}%)`;
-    const rest = !open ? sheetHeight + 24 : expanded ? 0 : sheetHeight - peekHeight;
+    const rest = !open ? sheetHeight + 24 : expanded ? 0 : sheetHeight - visiblePeek;
     return `translateY(${Math.max(rest + dragDy, 0)}px)`;
   });
   let compact = $derived(!desktop && !expanded);
@@ -543,7 +575,13 @@
 
   <div class="progress" class:active={loading} aria-hidden="true"></div>
 
-  <div bind:this={scroller} class="scroller" aria-busy={loading}>
+  <!-- Collapsed, only the peek is on screen: the scroller ends there so all of it can scroll in. -->
+  <div
+    bind:this={scroller}
+    class="scroller"
+    style:max-height={compact && !dragging ? `${visiblePeek - HANDLE_HEIGHT}px` : undefined}
+    aria-busy={loading}
+  >
     <div bind:clientHeight={contentHeight} class="content">
       {#if status === 'no-dictionaries'}
         <p class="text-[13px] text-gray-400">

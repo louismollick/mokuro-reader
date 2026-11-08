@@ -120,7 +120,7 @@
         }
       })
       .catch(() => {
-        if (!stale) ankiState = 'idle';
+        if (!stale && ankiState === 'checking') ankiState = 'idle';
       });
     // A slow Anki must not hold the button: offer "add" and let the answer correct it.
     const patience = setTimeout(() => {

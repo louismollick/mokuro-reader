@@ -13,6 +13,9 @@ export interface NoteTarget {
   disabled: string | null;
 }
 
+/** How long a failed Anki check stands before the headword is asked about again. */
+const RETRY_AFTER_MS = 10_000;
+
 /**
  * What the Anki button shows per headword, asked of Anki once per Lookup Sheet session:
  * `getNoteStates` costs a duplicate check round trip, and the same headword shows up again as
@@ -41,8 +44,14 @@ export class NoteStates {
             format.action === 'disabled' && !inAnki ? (format.reason ?? 'Unavailable') : null
         };
       });
-      // A failed check (Anki closed) is retried on the next ask.
-      target.catch(() => this.cache.delete(key));
+      // A failed check (Anki closed) is asked again, but not before `RETRY_AFTER_MS`: views wait
+      // briefly for the check, and an unreachable Anki must not slow every one of them.
+      const failed = target;
+      failed.catch(() =>
+        setTimeout(() => {
+          if (this.cache.get(key) === failed) this.cache.delete(key);
+        }, RETRY_AFTER_MS)
+      );
       this.cache.set(key, target);
     }
     return target;
@@ -54,9 +63,9 @@ export class NoteStates {
     const known = this.cache.get(key);
     this.cache.set(
       key,
-      (known ?? Promise.resolve(null)).then((target) =>
-        target ? { ...target, inAnki: true } : target
-      )
+      (known ?? Promise.resolve(null))
+        .catch(() => null)
+        .then((target) => (target ? { ...target, inAnki: true } : target))
     );
   }
 }

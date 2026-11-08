@@ -62,6 +62,7 @@ describe('createViewLoader', () => {
     vi.useFakeTimers();
     const client = fakeClient();
     client.lookup.termsContaining
+      .mockResolvedValueOnce([]) // the warm-up
       .mockRejectedValueOnce(new Error('busy'))
       .mockRejectedValueOnce(new Error('busy'))
       .mockRejectedValueOnce(new Error('busy'));
@@ -73,10 +74,37 @@ describe('createViewLoader', () => {
     await vi.runAllTimersAsync();
     const first = await loading;
     expect(first.kind === 'kanji' && first.words).toEqual([]);
-    expect(client.lookup.termsContaining).toHaveBeenCalledTimes(3);
+    expect(client.lookup.termsContaining).toHaveBeenCalledTimes(4);
 
     // Asking again (going back and forth) tries once more, and now the index answers.
     const second = await loader.load(view, null);
     expect(second.kind === 'kanji' && second.words).toHaveLength(2);
+  });
+
+  it('waits for the index warm-up, which hides the dictionary while it builds', async () => {
+    const client = fakeClient();
+    let finish: (terms: never[]) => void = () => {};
+    client.lookup.termsContaining.mockImplementationOnce(
+      () => new Promise((resolve) => (finish = resolve))
+    );
+    const loader = createViewLoader(client as unknown as Yomitan);
+    const loading = loader.load({ kind: 'kanji', character: '語' }, null);
+    await Promise.resolve();
+    expect(client.lookup.termsContaining).toHaveBeenCalledTimes(1);
+    finish([]);
+    const data = await loading;
+    expect(data.kind === 'kanji' && data.words).toHaveLength(2);
+  });
+
+  it('looks a failed word up again instead of caching the fallback', async () => {
+    const client = fakeClient();
+    client.lookup.terms.mockRejectedValueOnce(new Error('engine restarted'));
+    const loader = createViewLoader(client as unknown as Yomitan);
+    const view = { kind: 'term', query: '物語' } as const;
+    const fallback = [{ headwords: [] }] as unknown as TermDictionaryEntry[];
+    expect((await loader.load(view, '物語', fallback)).kind === 'word').toBe(true);
+    const again = await loader.load(view, '物語', fallback);
+    expect(again.kind === 'word' && again.entries[0]).not.toBe(fallback[0]);
+    expect(client.lookup.terms).toHaveBeenCalledTimes(2);
   });
 });

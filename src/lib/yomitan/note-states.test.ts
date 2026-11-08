@@ -76,3 +76,22 @@ describe('NoteStates', () => {
     expect(await states.get(controller, entry, {}, {})).toMatchObject({ inAnki: true });
   });
 });
+
+describe('NoteStates when Anki is unreachable', () => {
+  it('keeps a failed check for a while, then asks again', async () => {
+    vi.useFakeTimers();
+    const getNoteStates = vi.fn(async () => {
+      throw new Error('Failed to fetch');
+    });
+    const controller = { getNoteStates } as unknown as DisplayController;
+    const states = new NoteStates();
+    await expect(states.get(controller, entry, {}, {})).rejects.toThrow();
+    await expect(states.get(controller, entry, {}, {})).rejects.toThrow();
+    expect(getNoteStates).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(states.get(controller, entry, {}, {})).rejects.toThrow();
+    expect(getNoteStates).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+});

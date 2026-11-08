@@ -38,8 +38,12 @@ const TERMS_CONTAINING_RETRIES = [400, 1200];
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** `termsContaining`, retried while the index is being built or the storage is busy. */
+/**
+ * `termsContaining`, retried while the index is being built or the storage is busy. Waits for
+ * the warm-up first: while it builds the index, the engine hides the dictionary and answers `[]`.
+ */
 async function termsContaining(client: Yomitan, character: string): Promise<KanjiTerm[] | null> {
+  await warmUpCommonWords(client);
   for (let attempt = 0; ; attempt++) {
     try {
       return await client.lookup.termsContaining(character, { limit: COMMON_WORDS_LIMIT });
@@ -53,17 +57,22 @@ async function termsContaining(client: Yomitan, character: string): Promise<Kanj
   }
 }
 
-const warmed = new WeakSet<Yomitan>();
+const warmUps = new WeakMap<Yomitan, Promise<unknown>>();
 
 /**
  * Builds the frequency dictionary's kanji-term index in the background if it was never built
  * (dictionaries imported before the index existed get it on first use, which takes seconds), so
- * the first Kanji View doesn't wait for it. Once per client.
+ * the first Kanji View doesn't wait for it. Once per client; a failed warm-up runs again later.
  */
-export function warmUpCommonWords(client: Yomitan) {
-  if (warmed.has(client)) return;
-  warmed.add(client);
-  client.lookup.termsContaining('日', { limit: 1 }).catch(() => warmed.delete(client));
+export function warmUpCommonWords(client: Yomitan): Promise<unknown> {
+  let warming = warmUps.get(client);
+  if (!warming) {
+    warming = client.lookup.termsContaining('日', { limit: 1 }).catch(() => {
+      warmUps.delete(client);
+    });
+    warmUps.set(client, warming);
+  }
+  return warming;
 }
 
 /** The view loader for one Lookup Sheet session. */
@@ -77,31 +86,41 @@ export function createViewLoader(client: Yomitan) {
    * readings or spellings is one entry, without the shorter prefix matches (Segmentation itself
    * is unchanged). Falls back to `fallback` (the segmentation's own entries) if the lookup fails.
    */
-  function entries(text: string, fallback: TermDictionaryEntry[] = []) {
+  function lookUp(text: string) {
     let found = entriesByText.get(text);
     if (!found) {
       found = client.lookup
         .terms(text, { mode: 'merge' })
-        .then(({ entries }) =>
-          entries.length > 0 ? entriesCoveringSpan(entries, text.length) : fallback
-        )
-        .catch(() => fallback);
+        .then(({ entries }) => entriesCoveringSpan(entries, text.length));
       entriesByText.set(text, found);
+      // A failed lookup is asked again next time.
+      found.catch(() => entriesByText.delete(text));
     }
     return found;
   }
 
-  async function word(text: string, fallback?: TermDictionaryEntry[]): Promise<WordData> {
-    const found = await entries(text, fallback);
+  /** The lookup's entries, else `fallback`; `complete` is false when the lookup failed. */
+  async function entries(text: string, fallback: TermDictionaryEntry[] = []) {
+    try {
+      const found = await lookUp(text);
+      return { entries: found.length > 0 ? found : fallback, complete: true };
+    } catch {
+      return { entries: fallback, complete: false };
+    }
+  }
+
+  async function word(text: string, fallback?: TermDictionaryEntry[]) {
+    const { entries: found, complete } = await entries(text, fallback);
     const glossaries = await Promise.all(
       found.map((entry) => client.render.glossaries(entry, { media: 'placeholder' }))
     );
-    return { kind: 'word', entries: found, glossaries };
+    const data: WordData = { kind: 'word', entries: found, glossaries };
+    return { data, complete };
   }
 
   /** The gloss of the entry that has this term (and reading), as the Word View would show it. */
-  async function commonWord(term: KanjiTerm): Promise<CommonWord> {
-    const found = await entries(term.term);
+  async function commonWord(term: KanjiTerm): Promise<{ word: CommonWord; complete: boolean }> {
+    const { entries: found, complete } = await entries(term.term);
     const match =
       found.find(({ headwords }) =>
         headwords.some(
@@ -109,7 +128,7 @@ export function createViewLoader(client: Yomitan) {
             headword.term === term.term && (!term.reading || headword.reading === term.reading)
         )
       ) ?? found[0];
-    return { ...term, gloss: match ? firstGloss(match) : '' };
+    return { word: { ...term, gloss: match ? firstGloss(match) : '' }, complete };
   }
 
   async function kanji(character: string): Promise<{ data: KanjiData; complete: boolean }> {
@@ -117,12 +136,15 @@ export function createViewLoader(client: Yomitan) {
       loadKanjiInfo(character),
       termsContaining(client, character)
     ]);
-    const [words, similar, parts] = await Promise.all([
+    const [common, similar, parts] = await Promise.all([
       Promise.all((terms ?? []).map(commonWord)),
       Promise.all(info.similar.map(loadKanjiInfo)),
       Promise.all(info.components.map(loadKanjiInfo))
     ]);
-    return { data: { kind: 'kanji', info, words, similar, parts }, complete: terms !== null };
+    const words = common.map(({ word }) => word);
+    // Missing words or glosses are looked up again the next time the view is asked for.
+    const complete = terms !== null && common.every((word) => word.complete);
+    return { data: { kind: 'kanji', info, words, similar, parts }, complete };
   }
 
   /**
@@ -134,14 +156,16 @@ export function createViewLoader(client: Yomitan) {
     const key = view.kind === 'kanji' ? `kanji|${view.character}` : `word|${text ?? ''}`;
     let data = views.get(key);
     if (!data) {
-      if (view.kind === 'kanji') {
-        data = kanji(view.character).then(({ data, complete }) => {
-          if (!complete) views.delete(key);
-          return data;
-        });
-      } else {
-        data = text === null ? Promise.resolve(emptyWord) : word(text, fallback);
-      }
+      const loading =
+        view.kind === 'kanji'
+          ? kanji(view.character)
+          : text === null
+            ? Promise.resolve({ data: emptyWord, complete: true })
+            : word(text, fallback);
+      data = loading.then(({ data, complete }) => {
+        if (!complete) views.delete(key);
+        return data;
+      });
       views.set(key, data);
       data.catch(() => views.delete(key));
     }
