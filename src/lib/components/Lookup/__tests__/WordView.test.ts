@@ -179,6 +179,21 @@ describe('WordView', () => {
     expect(floated?.classList.contains('float')).toBe(true);
   });
 
+  it('puts the label on its own line before structured lists, whose markers a float would cover', async () => {
+    const jitendex = {
+      dictionary: 'Jitendex.org [2026-10-03]',
+      dictionaryAlias: 'Jitendex.org [2026-10-03]',
+      html: '<ol><li class="definition-item"><ul class="gloss-list"><li class="gloss-item"><span class="gloss-content"><ul data-sc-content="sense-groups"><li>slave</li></ul></span></li></ul></li></ol>'
+    };
+    const { container } = render(WordView, { ...baseProps, glossaries: [[jitendex]] });
+    await waitFor(() => expect(container.querySelector('.glossary')?.shadowRoot).toBeTruthy());
+    const label = container
+      .querySelector('.glossary')
+      ?.shadowRoot?.querySelector('.dictionary-label');
+    expect(label?.textContent).toBe('Jitendex.org');
+    expect(label?.classList.contains('line')).toBe(true);
+  });
+
   it('keeps the peek to the first dictionary and first frequency', async () => {
     const { container, queryByText } = render(WordView, { ...baseProps, compact: true });
     await waitFor(() => expect(container.querySelectorAll('.glossary')).toHaveLength(1));
