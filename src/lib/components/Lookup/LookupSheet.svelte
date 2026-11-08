@@ -472,13 +472,26 @@
    * the sheet closes.
    */
   let peekHeight = $state(MIN_PEEK);
+  /** Whether the last run measured the peek's own layout (see below). */
+  let measuringPeek = false;
   $effect(() => {
+    const height = contentHeight;
     if (!request) {
       peekHeight = MIN_PEEK;
+      measuringPeek = false;
       return;
     }
-    if (!compact || !shown) return;
-    const fit = Math.round(Math.max(contentHeight + HANDLE_HEIGHT, MIN_PEEK));
+    if (!compact || !shown) {
+      measuringPeek = false;
+      return;
+    }
+    // Entering the peek (the sheet collapsing, or the first view showing), `contentHeight` still
+    // holds the previous layout; it is measured again after the next layout, which re-runs this.
+    if (!measuringPeek) {
+      measuringPeek = true;
+      return;
+    }
+    const fit = Math.round(Math.max(height + HANDLE_HEIGHT, MIN_PEEK));
     if (fit > untrack(() => peekHeight)) peekHeight = fit;
   });
   /** The peek as shown: capped by the current viewport, so a rotation or keyboard can't break it. */

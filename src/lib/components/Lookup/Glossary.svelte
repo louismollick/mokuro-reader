@@ -24,6 +24,7 @@
       text-shadow: none !important;
     }
     .dictionary-label.float { float: left; }
+    .dictionary-label.line { display: block; }
     .tag { margin-right: 0.5em !important; }
     .expansion-button { display: none !important; }
     /* JMdict's table of other spellings and readings: the headword's small line has them. */
@@ -114,13 +115,15 @@
     const label = document.createElement('span');
     label.className = 'dictionary-label';
     label.textContent = block.dictionaryAlias.replace(/\s*\[[^\]]*\]\s*$/, '');
-    // Before the first definition's tags (plain inline) or, with none, its first gloss (floated).
+    // Before the first definition's tags (plain inline); with none, floated in front of a plain
+    // first gloss. Structured content with lists (Jitendex's sense groups) draws its markers
+    // outside its boxes, where a float would sit on them, so there it takes its own line.
     const first = container.querySelector('.definition-item');
     const tags = first?.querySelector('.definition-tag-list');
     const gloss = first?.querySelector('.gloss-item');
     if (tags?.firstChild) tags.prepend(label);
     else if (gloss) {
-      label.classList.add('float');
+      label.classList.add(gloss.querySelector('ul, ol') ? 'line' : 'float');
       gloss.prepend(label);
     }
     root.replaceChildren(container);
