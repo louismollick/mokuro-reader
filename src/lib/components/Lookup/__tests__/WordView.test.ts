@@ -77,6 +77,20 @@ const entry = {
   ]
 } as unknown as TermDictionaryEntry;
 
+/** What `render.glossaries` gives for the entry: two dictionaries. */
+const blocks = [
+  {
+    dictionary: 'JMdict [2026-10-23]',
+    dictionaryAlias: 'JMdict [2026-10-23]',
+    html: '<ol><li class="definition-item"><div class="definition-tag-list"><span class="tag" data-category="default">1</span><span class="tag" data-category="partOfSpeech">v1</span><span class="tag" data-category="dictionary">JMdict</span></div><ul class="gloss-list"><li class="gloss-item">to eat</li></ul></li></ol>'
+  },
+  {
+    dictionary: 'Jitendex',
+    dictionaryAlias: 'Jitendex',
+    html: '<ol><li class="definition-item"><ul class="gloss-list"><li class="gloss-item">eat</li></ul></li></ol>'
+  }
+];
+
 const client = {
   profile: {
     get: () => ({
@@ -87,26 +101,13 @@ const client = {
     })
   },
   audio: { urls: vi.fn(async () => [{ url: 'https://audio.test/a.mp3' }]) },
-  dictionaries: { getMedia: vi.fn(async () => null) },
-  render: {
-    glossaries: vi.fn(async () => [
-      {
-        dictionary: 'JMdict [2026-10-23]',
-        dictionaryAlias: 'JMdict [2026-10-23]',
-        html: '<ol><li class="definition-item"><div class="definition-tag-list"><span class="tag" data-category="default">1</span><span class="tag" data-category="partOfSpeech">v1</span><span class="tag" data-category="dictionary">JMdict</span></div><ul class="gloss-list"><li class="gloss-item">to eat</li></ul></li></ol>'
-      },
-      {
-        dictionary: 'Jitendex',
-        dictionaryAlias: 'Jitendex',
-        html: '<ol><li class="definition-item"><ul class="gloss-list"><li class="gloss-item">eat</li></ul></li></ol>'
-      }
-    ])
-  }
+  dictionaries: { getMedia: vi.fn(async () => null) }
 };
 
 const baseProps = {
   client: client as never,
   entries: [entry],
+  glossaries: [blocks],
   surface: '食べなかった',
   compact: false,
   glossaryStyle: { css: '', attributes: { theme: 'dark' } },
@@ -186,7 +187,11 @@ describe('WordView', () => {
   });
 
   it('lists homographs after the first entry', async () => {
-    const { container } = render(WordView, { ...baseProps, entries: [entry, entry] });
+    const { container } = render(WordView, {
+      ...baseProps,
+      entries: [entry, entry],
+      glossaries: [blocks, blocks]
+    });
     await waitFor(() => expect(container.querySelectorAll('.glossary')).toHaveLength(4));
     expect(container.querySelectorAll('.entry.next')).toHaveLength(1);
   });
@@ -303,6 +308,29 @@ describe('WordView', () => {
       noteStates: new NoteStates()
     });
     expect(await findByRole('img', { name: 'In Anki' })).toBeTruthy();
+  });
+
+  it("shows a word Anki already has as in Anki under Yomitan's default (allow duplicates)", async () => {
+    const getNoteStates = vi.fn(async () => [
+      {
+        entryIndex: 0,
+        cardFormats: [
+          {
+            cardFormatIndex: 0,
+            action: 'add-duplicate',
+            reason: null,
+            state: { duplicateNoteIds: [9] }
+          }
+        ]
+      }
+    ]);
+    const { findByRole, queryByRole } = render(WordView, {
+      ...baseProps,
+      controller: { getNoteStates } as never,
+      noteStates: new NoteStates()
+    });
+    expect(await findByRole('img', { name: 'In Anki' })).toBeTruthy();
+    expect(queryByRole('button', { name: 'Add to Anki' })).toBeNull();
   });
 
   it('reports a failed save and lets the user retry', async () => {

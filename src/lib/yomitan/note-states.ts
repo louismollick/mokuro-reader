@@ -4,11 +4,17 @@ import type { AnkiNoteContext, DisplayController, TermDictionaryEntry } from 'yo
 export interface NoteTarget {
   /** The card format the add button saves with. */
   cardFormatIndex: number;
-  /** Already saved, and the profile's duplicate behavior stops another. */
+  /**
+   * Anki already has a note for it. Whatever the profile's duplicate behavior: Yomitan's default
+   * (`new`) still allows another, but the word is known, which is what the button shows.
+   */
   inAnki: boolean;
   /** Why the add button is off, or null. */
   disabled: string | null;
 }
+
+/** How long a failed Anki check stands before the headword is asked about again. */
+const RETRY_AFTER_MS = 10_000;
 
 /**
  * What the Anki button shows per headword, asked of Anki once per Lookup Sheet session:
@@ -30,7 +36,7 @@ export class NoteStates {
       target = controller.getNoteStates([entry], context, extraMarkers).then(([state]) => {
         const format = state?.cardFormats[0];
         if (!format) return null;
-        const inAnki = format.action === 'disabled' && format.state.duplicateNoteIds.length > 0;
+        const inAnki = format.state.duplicateNoteIds.length > 0;
         return {
           cardFormatIndex: format.cardFormatIndex,
           inAnki,
@@ -38,8 +44,14 @@ export class NoteStates {
             format.action === 'disabled' && !inAnki ? (format.reason ?? 'Unavailable') : null
         };
       });
-      // A failed check (Anki closed) is retried on the next ask.
-      target.catch(() => this.cache.delete(key));
+      // A failed check (Anki closed) is asked again, but not before `RETRY_AFTER_MS`: views wait
+      // briefly for the check, and an unreachable Anki must not slow every one of them.
+      const failed = target;
+      failed.catch(() =>
+        setTimeout(() => {
+          if (this.cache.get(key) === failed) this.cache.delete(key);
+        }, RETRY_AFTER_MS)
+      );
       this.cache.set(key, target);
     }
     return target;
@@ -51,9 +63,9 @@ export class NoteStates {
     const known = this.cache.get(key);
     this.cache.set(
       key,
-      (known ?? Promise.resolve(null)).then((target) =>
-        target ? { ...target, inAnki: true } : target
-      )
+      (known ?? Promise.resolve(null))
+        .catch(() => null)
+        .then((target) => (target ? { ...target, inAnki: true } : target))
     );
   }
 }

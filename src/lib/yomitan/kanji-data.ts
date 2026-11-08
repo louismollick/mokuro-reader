@@ -135,6 +135,8 @@ export function createKanjiInfoLoader(
     if (!info) {
       info = lookupKanji(character).then((entries) => parseKanjiInfo(character, entries));
       cache.set(character, info);
+      // A failed lookup is asked again next time.
+      info.catch(() => cache.delete(character));
     }
     return info;
   };

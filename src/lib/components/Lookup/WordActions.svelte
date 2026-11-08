@@ -91,7 +91,10 @@
     player = null;
   });
 
-  let ankiState = $state<'idle' | 'adding' | 'added' | 'in-anki' | 'error'>('idle');
+  /** `checking` until Anki says whether it has the word, so a known word never flashes `+`. */
+  let ankiState = $state<'checking' | 'idle' | 'adding' | 'added' | 'in-anki' | 'error'>(
+    'checking'
+  );
   /** The card format the button saves with, and why it can't, if it can't. */
   let ankiTarget = $state<{ cardFormatIndex: number; disabled: string | null } | null>(null);
 
@@ -102,23 +105,35 @@
     const active = controller;
     void entry;
     generation++;
-    ankiState = 'idle';
+    ankiState = 'checking';
     ankiTarget = null;
     if (!active) return;
     let stale = false;
     noteStates
       .get(active, entry, noteContext, extraMarkers)
       .then((state) => {
-        if (stale || !state) return;
+        if (stale) return;
         ankiTarget = state;
-        if (state.inAnki) ankiState = 'in-anki';
+        // Unless a save started meanwhile (after `patience` gave up waiting).
+        if (ankiState === 'checking' || ankiState === 'idle') {
+          ankiState = state?.inAnki ? 'in-anki' : 'idle';
+        }
       })
-      .catch(() => {});
-    return () => (stale = true);
+      .catch(() => {
+        if (!stale && ankiState === 'checking') ankiState = 'idle';
+      });
+    // A slow Anki must not hold the button: offer "add" and let the answer correct it.
+    const patience = setTimeout(() => {
+      if (!stale && ankiState === 'checking') ankiState = 'idle';
+    }, 1500);
+    return () => {
+      stale = true;
+      clearTimeout(patience);
+    };
   });
 
   async function addToAnki() {
-    if (!controller || ankiState === 'adding') return;
+    if (!controller || ankiState === 'adding' || ankiState === 'checking') return;
     // What was saved is the entry as of the tap, whatever the button shows by the time Anki answers.
     const target = entry;
     const mine = generation;
@@ -186,11 +201,13 @@
         class="action"
         aria-label={ankiState === 'error' ? 'Add to Anki failed, retry' : 'Add to Anki'}
         title={ankiTarget?.disabled ?? undefined}
-        disabled={!!ankiTarget?.disabled}
-        aria-busy={ankiState === 'adding'}
+        disabled={!!ankiTarget?.disabled || ankiState === 'checking'}
+        aria-busy={ankiState === 'adding' || ankiState === 'checking'}
         onclick={addToAnki}
       >
-        {#if ankiState === 'adding'}
+        {#if ankiState === 'checking'}
+          <!-- An empty ring until Anki answers: neither "add" nor "in deck" yet. -->
+        {:else if ankiState === 'adding'}
           <svg viewBox="0 0 24 24" class="h-4 w-4 animate-spin" fill="none" aria-hidden="true"
             ><circle
               cx="12"
@@ -207,8 +224,7 @@
             /></svg
           >
         {:else if ankiState === 'error'}
-          <span class="text-[17px] leading-none font-bold text-[#f87171]" aria-hidden="true">!</span
-          >
+          <span class="text-[17px] leading-none font-bold text-red-400" aria-hidden="true">!</span>
         {:else}
           <svg
             viewBox="0 0 24 24"
@@ -233,22 +249,32 @@
     align-items: center;
     justify-content: center;
     border-radius: 9999px;
-    border: 1.5px solid #fff;
-    color: #fff;
+    border: 1.5px solid var(--color-white, #fff);
+    color: var(--color-white, #fff);
     background: transparent;
+    transition:
+      background-color 120ms ease-out,
+      border-color 120ms ease-out,
+      opacity 120ms ease-out;
   }
 
   .action:disabled {
     opacity: 0.4;
   }
 
+  .action[aria-busy='true']:disabled {
+    opacity: 0.25;
+  }
+
+  /* In the deck: a solid success disc, so it never reads as the outlined "add". */
   .action.done {
-    border-color: #4ade80;
-    color: #4ade80;
+    border-color: var(--color-green-600, #16a34a);
+    background: var(--color-green-600, #16a34a);
+    color: var(--color-on-accent, #fff);
   }
 
   .action:focus-visible {
-    outline: 2px solid #f5c542;
+    outline: 2px solid var(--color-primary-500);
     outline-offset: 2px;
   }
 </style>

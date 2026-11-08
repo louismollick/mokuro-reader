@@ -42,7 +42,7 @@ The Lookup Sheet view for one Word: the Sentence's Words with the chosen one sel
 The Lookup Sheet view for one kanji. Reached only by tapping a kanji inside a Word View (or another Kanji View), never directly from the page.
 
 **Common Words**:
-Frequent Words containing a given kanji, ranked by frequency, shown in the Kanji View.
+Frequent Words containing a given kanji, ranked by frequency, shown in the Kanji View with the first gloss of each.
 
 **Similar Kanji**:
 Kanji that look like a given kanji and are easy to confuse with it.

@@ -2,6 +2,7 @@
   import type {
     AnkiNoteContext,
     DisplayController,
+    GlossaryBlock,
     TermDictionaryEntry,
     Yomitan
   } from 'yomitan-core';
@@ -18,9 +19,11 @@
     client: Yomitan;
     /** The entries for the Word, best first. */
     entries: TermDictionaryEntry[];
+    /** Each entry's glossaries by dictionary, rendered before the view is shown. */
+    glossaries: GlossaryBlock[][];
     /** The text that was looked up. */
     surface: string;
-    /** Peek: the first entry's first dictionary only. */
+    /** Peek: the first entry's first dictionary, cut after its first sense. */
     compact: boolean;
     glossaryStyle: { css: string; attributes: Record<string, string> };
     controller: DisplayController | null;
@@ -38,6 +41,7 @@
   let {
     client,
     entries,
+    glossaries,
     surface,
     compact,
     glossaryStyle,
@@ -63,6 +67,7 @@
 
 {#each shown as entry, index (entryKey(entry, index))}
   {@const mined = minedPanels.get(entry)}
+  {@const blocks = glossaries[index] ?? []}
   <section class="entry" class:next={index > 0}>
     <div class="flex items-start justify-between gap-3">
       <Headword {entry} {surface} {compact} {onKanji} />
@@ -80,11 +85,9 @@
     {#if mined}
       <PanelThumb image={mined.image} onAdjust={() => onAdjust(entry)} />
     {/if}
-    {#await client.render.glossaries(entry, { media: 'placeholder' }) then blocks}
-      {#each compact ? blocks.slice(0, 1) : blocks as block (block.dictionary)}
-        <Glossary {client} {block} style={glossaryStyle} {compact} {onQuery} />
-      {/each}
-    {/await}
+    {#each compact ? blocks.slice(0, 1) : blocks as block (block.dictionary)}
+      <Glossary {client} {block} style={glossaryStyle} {compact} {onQuery} />
+    {/each}
   </section>
 {/each}
 
@@ -92,6 +95,6 @@
   .entry.next {
     margin-top: 12px;
     padding-top: 12px;
-    border-top: 1px solid #1a1a1a;
+    border-top: 1px solid var(--color-gray-700);
   }
 </style>
