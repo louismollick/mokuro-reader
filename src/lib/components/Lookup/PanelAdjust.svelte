@@ -61,8 +61,8 @@
     <img src={url} alt="" use:mountCropper />
   </div>
   <div class="relative z-10 flex justify-end gap-6 px-4 py-3 text-[15px]">
-    <button type="button" class="min-h-10 px-2 text-[#9a9a9a]" onclick={onCancel}>Cancel</button>
-    <button type="button" class="min-h-10 px-2 font-semibold text-[#4ade80]" onclick={confirm}
+    <button type="button" class="min-h-10 px-2 text-gray-400" onclick={onCancel}>Cancel</button>
+    <button type="button" class="min-h-10 px-2 font-semibold text-primary-500" onclick={confirm}
       >Save</button
     >
   </div>
@@ -75,8 +75,8 @@
     z-index: 70;
     display: flex;
     flex-direction: column;
-    background: #000;
-    color: #fff;
+    background: var(--color-gray-950, #030712);
+    color: var(--color-white, #fff);
   }
 
   .stage {

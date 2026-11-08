@@ -36,7 +36,7 @@ describe('NoteStates', () => {
     expect(await new NoteStates().get(controller, entry, {}, {})).toMatchObject({ inAnki: true });
   });
 
-  it('keeps a duplicate that the profile allows addable, and surfaces why a note is off', async () => {
+  it('reports a duplicate the profile allows as in Anki too, and surfaces why a note is off', async () => {
     const dup = controllerWith({
       cardFormatIndex: 0,
       action: 'add-duplicate',
@@ -44,7 +44,7 @@ describe('NoteStates', () => {
       state: { duplicateNoteIds: [7] }
     });
     expect(await new NoteStates().get(dup.controller, entry, {}, {})).toMatchObject({
-      inAnki: false,
+      inAnki: true,
       disabled: null
     });
 

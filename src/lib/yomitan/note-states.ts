@@ -4,7 +4,10 @@ import type { AnkiNoteContext, DisplayController, TermDictionaryEntry } from 'yo
 export interface NoteTarget {
   /** The card format the add button saves with. */
   cardFormatIndex: number;
-  /** Already saved, and the profile's duplicate behavior stops another. */
+  /**
+   * Anki already has a note for it. Whatever the profile's duplicate behavior: Yomitan's default
+   * (`new`) still allows another, but the word is known, which is what the button shows.
+   */
   inAnki: boolean;
   /** Why the add button is off, or null. */
   disabled: string | null;
@@ -30,7 +33,7 @@ export class NoteStates {
       target = controller.getNoteStates([entry], context, extraMarkers).then(([state]) => {
         const format = state?.cardFormats[0];
         if (!format) return null;
-        const inAnki = format.action === 'disabled' && format.state.duplicateNoteIds.length > 0;
+        const inAnki = format.state.duplicateNoteIds.length > 0;
         return {
           cardFormatIndex: format.cardFormatIndex,
           inAnki,

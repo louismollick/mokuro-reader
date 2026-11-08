@@ -157,3 +157,67 @@ export function frequencyLabels(entry: TermDictionaryEntry): FrequencyLabel[] {
 export function inflectionNames(entry: TermDictionaryEntry): string[] {
   return entry.inflectionRuleChainCandidates[0]?.inflectionRules.map(({ name }) => name) ?? [];
 }
+
+type GlossNode = Extract<
+  TermDictionaryEntry['definitions'][number]['entries'][number],
+  { type: 'structured-content' }
+>['content'];
+
+/** The node's text without ruby readings or images; a line break reads as a space. */
+function nodeText(node: GlossNode): string {
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  if (node.tag === 'br') return ' ';
+  if (node.tag === 'rt' || node.tag === 'rp' || node.tag === 'img') return '';
+  return node.content === undefined ? '' : nodeText(node.content);
+}
+
+/** The first node (depth first) whose `data-sc-content` is `name`. */
+function findByContent(node: GlossNode, name: string): GlossNode | null {
+  if (typeof node === 'string') return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const found = findByContent(child, name);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if ('data' in node && node.data?.content === name) return node;
+  return node.tag === 'img' || node.content === undefined
+    ? null
+    : findByContent(node.content, name);
+}
+
+/** The text of a list node's first item, else of the whole node. */
+function firstItemText(list: GlossNode): string {
+  if (typeof list !== 'string' && !Array.isArray(list) && list.tag !== 'img' && list.content) {
+    const items = Array.isArray(list.content) ? list.content : [list.content];
+    const item = items.find((child) => typeof child === 'object' && !Array.isArray(child));
+    if (item !== undefined) return nodeText(item);
+  }
+  return nodeText(list);
+}
+
+/**
+ * A one-line meaning for a Common Words row: the first gloss of the entry's first sense. Jitendex
+ * and the JMdict family mark the sense's gloss list `data-sc-content="glossary"`; plain-text
+ * dictionaries give each gloss as a string. Other structured content falls back to its text.
+ */
+export function firstGloss(entry: TermDictionaryEntry): string {
+  for (const { entries } of entry.definitions) {
+    for (const item of entries) {
+      let text = '';
+      if (typeof item === 'string') text = item;
+      else if (Array.isArray(item))
+        continue; // a deinflection, not a meaning
+      else if (item.type === 'text') text = item.text;
+      else if (item.type === 'structured-content') {
+        const glossary = findByContent(item.content, 'glossary');
+        text = glossary === null ? nodeText(item.content) : firstItemText(glossary);
+      }
+      text = text.replace(/\s+/g, ' ').trim();
+      if (text) return text;
+    }
+  }
+  return '';
+}

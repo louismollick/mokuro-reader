@@ -2,23 +2,24 @@
   import { scopeCssToHost } from '@yomitan-core/web';
 
   /**
-   * The sheet's look over Yomitan's popup CSS (hence `!important`): plain gray tags instead of
-   * badges, no collapse button, no forms table.
+   * The sheet's look over Yomitan's popup CSS (hence `!important`): plain muted tags instead of
+   * badges, no collapse button, no forms table. Colors are the app theme's (custom properties
+   * reach into the shadow root).
    */
   const LABEL_CSS = `
-    :host { display: block; font-size: 14px; line-height: 1.5; color: #fff; }
+    :host { display: block; font-size: 14px; line-height: 1.5; color: var(--color-white, #fff); }
     .dictionary-label {
       margin-right: 0.5em;
       font-size: 11px;
       font-weight: 600;
-      color: #9a9a9a;
+      color: var(--color-gray-400, #9ca3af);
     }
     .tag, .tag-label, .tag-label-content {
       background: none !important;
       border: 0 !important;
       border-radius: 0 !important;
       padding: 0 !important;
-      color: #9a9a9a !important;
+      color: var(--color-gray-400, #9ca3af) !important;
       font-size: 11px !important;
       text-shadow: none !important;
     }
@@ -29,6 +30,30 @@
     .definition-item:has([data-sc-content='formsTable']) { display: none !important; }
   `;
   let shared: { css: string; sheets: CSSStyleSheet[] } | null = null;
+
+  /** The peek never shows more than this many lines of one dictionary. */
+  const PEEK_MAX_LINES = 8;
+
+  /**
+   * Where the peek cuts the glossary (px from its top): after the first sense's glosses. Jitendex
+   * and the JMdict family mark a sense's gloss list `data-sc-content="glossary"`; other
+   * dictionaries end at their first definition's gloss list. Capped at `PEEK_MAX_LINES`. Null
+   * when nothing is laid out (no layout engine, or not attached yet).
+   */
+  function peekCut(
+    host: HTMLElement,
+    root: ShadowRoot
+  ): { height: number; capped: boolean } | null {
+    const top = host.getBoundingClientRect().top;
+    const end =
+      root.querySelector('[data-sc-content="glossary"]') ?? root.querySelector('.gloss-list');
+    const bottom = end?.getBoundingClientRect().bottom ?? 0;
+    const lineHeight = parseFloat(getComputedStyle(host).lineHeight) || 21;
+    const max = lineHeight * PEEK_MAX_LINES;
+    if (bottom - top <= 0) return host.scrollHeight > 0 ? { height: max, capped: true } : null;
+    const height = Math.ceil(bottom - top);
+    return height > max ? { height: max, capped: true } : { height, capped: false };
+  }
 
   /** The popup CSS is large and the same for every block, so build its sheets once per CSS text. */
   function sheetsFor(css: string) {
@@ -53,7 +78,7 @@
     block: GlossaryBlock;
     /** Yomitan's popup CSS and the `data-*` attributes it keys off (`render.css()` / `attributes()`). */
     style: { css: string; attributes: Record<string, string> };
-    /** Peek: clamp to three lines. */
+    /** Peek: cut after the first sense. */
     compact: boolean;
     /** A `yomitan://lookup` link in a definition was tapped. */
     onQuery: (query: string) => void;
@@ -62,6 +87,8 @@
   let { client, block, style, compact, onQuery }: Props = $props();
 
   let host: HTMLDivElement | undefined = $state();
+  /** The peek's cut, or null to show everything. */
+  let cut = $state<{ height: number; capped: boolean } | null>(null);
 
   // Dictionary markup lives in a shadow root so its CSS can't touch the sheet and vice versa. The
   // dictionary's name sits in front of the first definition: a run-in label, not a line of its own.
@@ -98,6 +125,20 @@
     }
     root.replaceChildren(container);
 
+    // Measured now (before paint) and again whenever the text reflows, as when a font arrives.
+    let observer: ResizeObserver | undefined;
+    if (compact) {
+      const target = host;
+      const measure = () => (cut = peekCut(target, root));
+      measure();
+      if (typeof ResizeObserver !== 'undefined') {
+        observer = new ResizeObserver(measure);
+        observer.observe(container);
+      }
+    } else {
+      cut = null;
+    }
+
     // Images are left empty by `media: 'placeholder'`; fill them from the dictionary's media.
     const urls: string[] = [];
     let stale = false;
@@ -119,6 +160,7 @@
     }
     return () => {
       stale = true;
+      observer?.disconnect();
       urls.forEach((url) => URL.revokeObjectURL(url));
     };
   });
@@ -138,13 +180,24 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div bind:this={host} class="glossary" class:compact lang="ja" onclick={handleClick}></div>
+<div
+  bind:this={host}
+  class="glossary"
+  class:cut={cut !== null}
+  class:capped={cut?.capped}
+  style:max-height={cut ? `${cut.height}px` : undefined}
+  lang="ja"
+  onclick={handleClick}
+></div>
 
 <style>
-  .glossary.compact {
-    max-height: 4.5em;
+  .glossary.cut {
     overflow: hidden;
-    -webkit-mask-image: linear-gradient(#000 65%, transparent);
-    mask-image: linear-gradient(#000 65%, transparent);
+  }
+
+  /* Cut mid-sense: fade the last line out so the cut reads as "more below". */
+  .glossary.capped {
+    -webkit-mask-image: linear-gradient(#000 calc(100% - 1.5em), transparent);
+    mask-image: linear-gradient(#000 calc(100% - 1.5em), transparent);
   }
 </style>

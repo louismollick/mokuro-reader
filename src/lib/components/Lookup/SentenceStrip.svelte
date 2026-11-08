@@ -56,7 +56,7 @@
         >{word.text}</span
       >
     {:else}
-      <span class="text-[#666]">{word.text}</span>
+      <span class="text-gray-500">{word.text}</span>
     {/if}
   {/each}
 </div>
@@ -70,21 +70,21 @@
   }
 
   .word {
-    color: #bbb;
+    color: var(--color-gray-300, #d1d5db);
     cursor: pointer;
     text-decoration: underline;
-    text-decoration-color: #333;
+    text-decoration-color: var(--color-gray-600, #4b5563);
     text-decoration-thickness: 1px;
     text-underline-offset: 4px;
   }
 
   .word.selected {
-    color: #fff;
-    text-decoration-color: #f5c542;
+    color: var(--color-white, #fff);
+    text-decoration-color: var(--color-primary-500, #fe795d);
     text-decoration-thickness: 2px;
   }
 
   .word:focus-visible {
-    outline: 1px solid #f5c542;
+    outline: 1px solid var(--color-primary-500, #fe795d);
   }
 </style>

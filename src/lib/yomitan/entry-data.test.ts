@@ -3,6 +3,7 @@ import type { TermDictionaryEntry } from 'yomitan-core';
 import {
   alternateForms,
   entriesCoveringSpan,
+  firstGloss,
   distributeFurigana,
   primaryHeadword,
   frequencyLabels,
@@ -190,5 +191,87 @@ describe('inflectionNames', () => {
     });
     expect(inflectionNames(e)).toEqual(['negative', 'past']);
     expect(inflectionNames(entry({ inflectionRuleChainCandidates: [] }))).toEqual([]);
+  });
+});
+
+describe('firstGloss', () => {
+  /** Jitendex's 掛ける, trimmed: tags, then the first sense's glossary, then an example sentence. */
+  const jitendex = {
+    type: 'structured-content',
+    content: [
+      {
+        tag: 'ul',
+        data: { content: 'sense-groups' },
+        content: [
+          {
+            tag: 'li',
+            data: { content: 'sense-group' },
+            content: [
+              {
+                tag: 'span',
+                data: { class: 'tag', content: 'part-of-speech-info' },
+                content: '1-dan'
+              },
+              {
+                tag: 'ol',
+                content: [
+                  {
+                    tag: 'li',
+                    data: { content: 'sense' },
+                    content: [
+                      {
+                        tag: 'ul',
+                        data: { content: 'glossary' },
+                        content: [
+                          { tag: 'li', content: 'to hang up (e.g. a coat, a picture on the wall)' },
+                          { tag: 'li', content: 'to let hang' }
+                        ]
+                      },
+                      {
+                        tag: 'div',
+                        data: { content: 'extra-info' },
+                        content: [
+                          'コートを',
+                          { tag: 'ruby', content: ['掛', { tag: 'rt', content: 'か' }] }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  it("reads the first sense's first gloss from Jitendex structured content", () => {
+    const e = entry({ definitions: [{ entries: [jitendex] }] as never });
+    expect(firstGloss(e)).toBe('to hang up (e.g. a coat, a picture on the wall)');
+  });
+
+  it('takes plain glosses as they are, skipping deinflections and empty ones', () => {
+    const e = entry({
+      definitions: [{ entries: [['掛ける', []], '  ', 'to  hang'] }] as never
+    });
+    expect(firstGloss(e)).toBe('to hang');
+  });
+
+  it('falls back to the text of other structured content, without ruby readings', () => {
+    const e = entry({
+      definitions: [
+        {
+          entries: [
+            {
+              type: 'structured-content',
+              content: [{ tag: 'ruby', content: ['掛', { tag: 'rt', content: 'か' }] }, 'けること']
+            }
+          ]
+        }
+      ] as never
+    });
+    expect(firstGloss(e)).toBe('掛けること');
+    expect(firstGloss(entry({ definitions: [] as never }))).toBe('');
   });
 });

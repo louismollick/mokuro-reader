@@ -44,28 +44,28 @@
                 aria-label={`Kanji ${char}`}
                 onclick={() => onKanji(char)}>{char}</button
               >{:else}{char}{/if}{/each}{#if segment.reading}<rt
-              class="text-[11px] font-normal text-[#9a9a9a]">{segment.reading}</rt
+              class="text-[11px] font-normal text-gray-400">{segment.reading}</rt
             >{/if}</ruby
         >
       {/each}
     </span>
 
     {#each pitches as position (position)}
-      <span class="pitch text-[12px] whitespace-nowrap text-[#ccc]">
+      <span class="pitch text-[12px] whitespace-nowrap text-gray-300">
         {#each pitchMorae(reading, position) as mora, index (index)}<span
             class:high={mora.high}
             class:downstep={mora.downstep}>{mora.text}</span
-          >{/each}<span class="ml-0.5 text-[#9a9a9a]">[{position}]</span>
+          >{/each}<span class="ml-0.5 text-gray-400">[{position}]</span>
       </span>
     {/each}
   </div>
 
   {#if alternates.length > 0}
-    <p class="text-[12px] text-[#9a9a9a]">{alternates.join(' · ')}</p>
+    <p class="text-[12px] text-gray-400">{alternates.join(' · ')}</p>
   {/if}
 
   {#if frequencies.length > 0}
-    <p class="flex flex-wrap gap-x-3 text-[12px] text-[#9a9a9a]">
+    <p class="flex flex-wrap gap-x-3 text-[12px] text-gray-400">
       {#each frequencies as frequency, index (index)}
         <span
           ><span class="font-semibold text-white tabular-nums">{frequency.value}</span>
@@ -76,7 +76,7 @@
   {/if}
 
   {#if inflections.length > 0}
-    <p class="text-[12px] text-[#9a9a9a]">{surface} ← {inflections.join(' · ')}</p>
+    <p class="text-[12px] text-gray-400">{surface} ← {inflections.join(' · ')}</p>
   {/if}
 </div>
 
@@ -84,19 +84,19 @@
   .kanji {
     all: unset;
     cursor: pointer;
-    border-bottom: 1px dotted #666;
+    border-bottom: 1px dotted var(--color-gray-500, #6b7280);
   }
 
   .kanji:focus-visible {
-    outline: 1px solid #f5c542;
+    outline: 1px solid var(--color-primary-500, #fe795d);
   }
 
   /* High morae get an overline; the mora before the drop also gets the downstep tick. */
   .pitch span.high {
-    border-top: 1px solid #fff;
+    border-top: 1px solid var(--color-white, #fff);
   }
 
   .pitch span.high.downstep {
-    border-right: 1px solid #fff;
+    border-right: 1px solid var(--color-white, #fff);
   }
 </style>

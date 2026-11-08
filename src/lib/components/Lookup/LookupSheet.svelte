@@ -1,16 +1,20 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { createDisplayController } from 'yomitan-core';
+  import { createDisplayController, type DisplayController } from 'yomitan-core';
   import type { AnkiNoteContext, SegmentToken, TermDictionaryEntry, Yomitan } from 'yomitan-core';
   import type { VolumeMetadata } from '$lib/anki-connect';
   import type { Rect } from '$lib/panel/yolo';
-  import { settings } from '$lib/settings';
+  import { activeTheme, settings } from '$lib/settings';
   import { getYomitan } from '$lib/yomitan/client';
   import { createMokuroAnkiTransport } from '$lib/yomitan/anki-transport';
   import { buildBoxText, type BoxText } from '$lib/yomitan/box-text';
   import { showHighlight, tapOffset } from '$lib/yomitan/box-dom';
-  import { entriesCoveringSpan } from '$lib/yomitan/entry-data';
-  import { createKanjiInfoLoader } from '$lib/yomitan/kanji-data';
+  import {
+    createViewLoader,
+    warmUpCommonWords,
+    type ViewData,
+    type ViewLoader
+  } from '$lib/yomitan/lookup-loader';
   import type { LookupRequest } from '$lib/yomitan/lookup-request';
   import {
     backTitle,
@@ -19,7 +23,8 @@
     pushView,
     selectWord,
     startHistory,
-    type LookupHistory
+    type LookupHistory,
+    type LookupView
   } from '$lib/yomitan/lookup-session';
   import { MinedPanels } from '$lib/yomitan/mined-panels.svelte';
   import type { MinedPanel } from '$lib/yomitan/mining';
@@ -52,27 +57,42 @@
     glossaryStyle: { css: string; attributes: Record<string, string> };
     noteStates: NoteStates;
     minedPanels: MinedPanels;
-    /** Merged entries per looked-up text: one per word, with all its spellings and readings. */
-    merged: Map<string, Promise<TermDictionaryEntry[]>>;
-    loadKanji: ReturnType<typeof createKanjiInfoLoader>;
+    loader: ViewLoader;
+  }
+
+  /** What the sheet shows: a view whose data is fully loaded. */
+  interface Shown {
+    session: Session;
+    history: LookupHistory;
+    data: ViewData;
+    /** It took long enough to load that it fades in; a cached view swaps at once. */
+    fade: boolean;
   }
 
   // ---- Lookup session --------------------------------------------------------------------
 
   let status = $state<'loading' | 'ready' | 'no-dictionaries' | 'error'>('loading');
   let session = $state.raw<Session | null>(null);
+  /** The history the user asked for; `shown` catches up once its view has loaded. */
   let history = $state.raw<LookupHistory>(startHistory(null));
+  let shown = $state.raw<Shown | null>(null);
   let generation = 0;
   /** Segmentation per Text Box text, kept while the sheet stays open on a page. */
   const segmentations = new Map<string, Promise<SegmentToken[]>>();
+  /** One loader per client, kept while the sheet stays open, so views are cached across taps. */
+  let loaders = new WeakMap<Yomitan, ViewLoader>();
+
+  /** Yomitan's glossary CSS keys its colors off `data-theme`: follow the app theme's base. */
+  function glossaryAttributes(client: Yomitan) {
+    const base = $activeTheme.base;
+    return { ...client.render.attributes(), theme: base, outerTheme: base };
+  }
 
   async function begin(next: LookupRequest) {
     const id = ++generation;
     status = 'loading';
-    session = null;
-    history = startHistory(null);
     adjusting = null;
-    expanded = false;
+    // The previous view stays on screen (and the sheet where it is) until this one is ready.
 
     try {
       // Read the tap's geometry before anything async: the page could move meanwhile.
@@ -82,8 +102,10 @@
       if (id !== generation) return;
       if (!client.profile.get().options.dictionaries.some(({ enabled }) => enabled)) {
         status = 'no-dictionaries';
+        shown = null;
         return;
       }
+      warmUpCommonWords(client);
 
       const key = `${next.boxKey}|${box.text}`;
       let segmenting = segmentations.get(key);
@@ -95,57 +117,133 @@
       const [tokens, css] = await Promise.all([segmenting, client.render.css()]);
       if (id !== generation) return;
 
-      session = {
+      let loader = loaders.get(client);
+      if (!loader) {
+        loader = createViewLoader(client);
+        loaders.set(client, loader);
+      }
+      const current: Session = {
         request: next,
         client,
         box,
         tokens,
-        glossaryStyle: { css, attributes: client.render.attributes() },
+        glossaryStyle: { css, attributes: glossaryAttributes(client) },
         noteStates: new NoteStates(),
         minedPanels: new MinedPanels(),
-        merged: new Map(),
-        loadKanji: createKanjiInfoLoader((character) => client.lookup.kanji(character))
+        loader
       };
-      history = startHistory(offset === null ? null : pickWordIndex(tokens, offset));
+      session = current;
       status = 'ready';
+      scrollStack = [];
+      navigate(startHistory(offset === null ? null : pickWordIndex(tokens, offset)));
     } catch (error) {
       if (id !== generation) return;
       console.error('Tap Lookup failed:', error);
       status = 'error';
+      shown = null;
     }
   }
 
+  /** The Word View's lookup text and Segmentation entries for `view`; null for a Kanji View. */
+  function viewText(current: Session, view: LookupView) {
+    if (view.kind === 'kanji') return null;
+    if (view.kind === 'term') return { text: view.query, fallback: undefined };
+    const token = view.wordIndex === null ? undefined : current.tokens[view.wordIndex];
+    return token ? { text: token.text, fallback: token.entries } : { text: null, fallback: [] };
+  }
+
+  /** How long the Anki check may hold a view back, so its button appears in its real state. */
+  const NOTE_STATE_GRACE_MS = 300;
+  /** A view that loads faster than this appears at once, without fading in. */
+  const FADE_AFTER_MS = 100;
+  let navigation = 0;
+  /** The scroll position to restore once the next view shows (going back), else the top. */
+  let restoreScroll = 0;
+
   /**
-   * The entries the Word View shows for a text: a merge-mode lookup, so a word with several
-   * readings or spellings is one entry, without the shorter prefix matches (Segmentation itself
-   * is unchanged). Falls back to the
-   * segmentation's own entries if the lookup fails.
+   * Asks for `next`; the sheet keeps showing the current view until `next` has loaded. Then it
+   * scrolls to `scrollTop`, and opens the full sheet if `expand`.
    */
-  function wordEntries(current: Session, text: string, fallback: TermDictionaryEntry[] = []) {
-    let entries = current.merged.get(text);
-    if (!entries) {
-      entries = current.client.lookup
-        .terms(text, { mode: 'merge' })
-        .then(({ entries: found }) =>
-          found.length > 0 ? entriesCoveringSpan(found, text.length) : fallback
-        )
-        .catch(() => fallback);
-      current.merged.set(text, entries);
-    }
-    return entries;
+  function navigate(next: LookupHistory, { scrollTop = 0, expand = false } = {}) {
+    const current = session;
+    if (!current) return;
+    history = next;
+    const id = ++navigation;
+    const started = performance.now();
+    const view = currentView(next);
+    const target = viewText(current, view);
+    current.loader
+      .load(view, target?.text ?? null, target?.fallback)
+      .then(async (data) => {
+        const active = controllerFor(current);
+        if (data.kind === 'word' && active) {
+          const context = noteContextFor(
+            current,
+            target?.text ?? '',
+            view.kind === 'box' ? (view.wordIndex ?? undefined) : undefined
+          );
+          // The first entry is the one in view; the others ask Anki when they appear.
+          const states = data.entries
+            .slice(0, 1)
+            .map((entry) => current.noteStates.get(active, entry, context, extraMarkers));
+          await Promise.race([
+            Promise.allSettled(states),
+            new Promise((resolve) => setTimeout(resolve, NOTE_STATE_GRACE_MS))
+          ]);
+        }
+        return data;
+      })
+      .then(
+        (data) => {
+          if (id !== navigation) return;
+          restoreScroll = scrollTop;
+          if (expand && !desktop) expanded = true;
+          const fade = performance.now() - started > FADE_AFTER_MS;
+          shown = { session: current, history: next, data, fade };
+        },
+        (error) => {
+          if (id !== navigation) return;
+          console.error('Lookup view failed to load:', error);
+          // Stay on the view that is showing (with its back button); asking again retries.
+          if (shown?.session === current) {
+            history = shown.history;
+            showSnackbar('Lookup failed.');
+          } else {
+            status = 'error';
+            shown = null;
+          }
+        }
+      );
   }
 
   $effect(() => {
     if (!request) {
       segmentations.clear();
+      loaders = new WeakMap();
+      generation++;
+      navigation++;
+      session = null;
+      shown = null;
+      history = startHistory(null);
       return;
     }
     untrack(() => void begin(request));
   });
 
-  let view = $derived(currentView(history));
-  const wordText = (index: number) => session?.tokens[index]?.text;
-  let backLabel = $derived(backTitle(history, wordText));
+  /** Still loading what the user asked for (a new tap, or a view not yet shown). */
+  let loading = $derived(
+    status === 'loading' || (status === 'ready' && shown?.history !== history)
+  );
+  let view = $derived(shown ? currentView(shown.history) : null);
+  let backLabel = $derived(
+    shown ? backTitle(shown.history, (index) => shown?.session.tokens[index]?.text) : null
+  );
+  /** The strip follows the user's choice at once; the entries below follow when loaded. */
+  let stripSelected = $derived.by(() => {
+    const asked = currentView(history);
+    if (asked.kind === 'box') return asked.wordIndex;
+    return view?.kind === 'box' ? view.wordIndex : null;
+  });
 
   // ---- Page highlight --------------------------------------------------------------------
 
@@ -154,6 +252,7 @@
     const root = history[0];
     if (!request || !session || root.kind !== 'box' || root.wordIndex === null) return;
     const token = session.tokens[root.wordIndex];
+    if (!token) return;
     return showHighlight(
       session.request.textBox,
       session.box.spans(token.range.start, token.range.end)
@@ -194,8 +293,10 @@
 
   // ---- Views -----------------------------------------------------------------------------
 
-  /** The Sentence and page details Anki notes get for a Word at `start` in the Text Box. */
-  function noteContextFor(client: Yomitan, box: BoxText, query: string, start: number) {
+  /** The Sentence and page details Anki notes get for `query`, found in the Text Box if it is there. */
+  function noteContextFor({ client, box, tokens }: Session, query: string, wordIndex?: number) {
+    const token = wordIndex === undefined ? undefined : tokens[wordIndex];
+    const start = token?.text === query ? token.range.start : box.text.indexOf(query);
     const sentence =
       start >= 0
         ? client.lookup.sentence(box.text, start, query.length)
@@ -218,25 +319,49 @@
       $settings.ankiConnectSettings.connectionData?.isAndroid ?? false
     ].join('|')
   );
-  let controller = $derived.by(() => {
+  /** Each session's display controller, made again when the connection settings change. */
+  let controllers = $derived.by(() => {
     void ankiTransportKey;
-    if (!ankiEnabled || !session) return null;
-    const { client, minedPanels } = session;
-    return createDisplayController(client, {
-      anki: createMokuroAnkiTransport(volumeMetadata, (fileName, source) =>
-        minedPanels.screenshots.record(fileName, source)
-      )
-    });
+    void volumeMetadata;
+    return new WeakMap<Session, DisplayController>();
   });
+
+  /** The Anki controller of `current` (its Panel Crops are recorded to its session); null when off. */
+  function controllerFor(current: Session): DisplayController | null {
+    if (!ankiEnabled) return null;
+    let controller = controllers.get(current);
+    if (!controller) {
+      const { client, minedPanels } = current;
+      controller = createDisplayController(client, {
+        anki: createMokuroAnkiTransport(volumeMetadata, (fileName, source) =>
+          minedPanels.screenshots.record(fileName, source)
+        )
+      });
+      controllers.set(current, controller);
+    }
+    return controller;
+  }
   let extraMarkers = $derived({
     series: volumeMetadata?.seriesTitle ?? '',
     volume: volumeMetadata?.volumeTitle ?? ''
   });
 
+  /** Scroll positions of the views under the current one, restored on the way back. */
+  let scrollStack: number[] = [];
+
+  function push(next: LookupView, expand = false) {
+    scrollStack = [...scrollStack.slice(0, history.length - 1), scroller?.scrollTop ?? 0];
+    navigate(pushView(history, next), { expand });
+  }
+
   function openKanji(character: string) {
-    history = pushView(history, { kind: 'kanji', character });
-    // A Kanji View is taller than the peek and scrolls only in the full sheet.
-    if (!desktop) expanded = true;
+    // A Kanji View is taller than the peek: it opens the full sheet once it shows.
+    push({ kind: 'kanji', character }, true);
+  }
+
+  function selectBoxWord(index: number) {
+    scrollStack = [];
+    navigate(selectWord(index));
   }
 
   function startAdjust(minedPanels: MinedPanels, entry: TermDictionaryEntry) {
@@ -245,11 +370,12 @@
   }
 
   function openTerm(query: string) {
-    history = pushView(history, { kind: 'term', query });
+    push({ kind: 'term', query });
   }
 
   function back() {
-    history = popView(history);
+    const next = popView(history);
+    navigate(next, { scrollTop: scrollStack[next.length - 1] ?? 0 });
   }
 
   // ---- Sheet geometry and drag -----------------------------------------------------------
@@ -257,6 +383,8 @@
   const DESKTOP_MIN_WIDTH = 768;
   const HANDLE_HEIGHT = 28;
   const MIN_PEEK = 168;
+  /** The peek never covers more of the viewport than this; past it, the peek scrolls. */
+  const MAX_PEEK_SHARE = 0.6;
 
   let viewportWidth = $state(window.innerWidth);
   let viewportHeight = $state(window.visualViewport?.height ?? window.innerHeight);
@@ -272,14 +400,29 @@
     return () => window.visualViewport?.removeEventListener('resize', measureViewport);
   });
 
-  /** Mounted closed, then opened a frame later so the first sheet slides in. */
+  /** How long a first Tap Lookup may take before the sheet slides in without its content. */
+  const OPEN_EMPTY_AFTER_MS = 300;
+
+  /**
+   * Mounted closed, then slides in once the first view is ready (laid out, so the peek has its
+   * height), or after `OPEN_EMPTY_AFTER_MS` with the loading bar. Once open, later taps only swap
+   * the content.
+   */
   let open = $state(false);
   $effect(() => {
     if (!request) {
       open = false;
       return;
     }
-    const frame = requestAnimationFrame(() => (open = true));
+    if (untrack(() => open)) return;
+    if (shown === null && status === 'loading') {
+      const timer = setTimeout(() => (open = true), OPEN_EMPTY_AFTER_MS);
+      return () => clearTimeout(timer);
+    }
+    // Two frames: the content's height is measured (ResizeObserver) between them.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => (open = true));
+    });
     return () => cancelAnimationFrame(frame);
   });
 
@@ -289,10 +432,25 @@
   let dragging = $state(false);
 
   let sheetHeight = $derived(Math.round(viewportHeight * 0.92));
-  /** Fits the header and first glosses, between 168 px and 45% of the viewport. */
-  let peekHeight = $derived(
-    Math.round(Math.min(Math.max(contentHeight + HANDLE_HEIGHT, MIN_PEEK), viewportHeight * 0.45))
-  );
+
+  /**
+   * Fits the peek's content: the Sentence, the headword and the first sense of the first
+   * dictionary (Glossary cuts there). It only grows while the sheet stays open, so a new tap or
+   * another Word in the strip changes the content without moving the sheet; it starts over when
+   * the sheet closes.
+   */
+  let peekHeight = $state(MIN_PEEK);
+  $effect(() => {
+    if (!request) {
+      peekHeight = MIN_PEEK;
+      return;
+    }
+    if (!compact || !shown) return;
+    const fit = Math.round(
+      Math.min(Math.max(contentHeight + HANDLE_HEIGHT, MIN_PEEK), viewportHeight * MAX_PEEK_SHARE)
+    );
+    if (fit > untrack(() => peekHeight)) peekHeight = fit;
+  });
   let transform = $derived.by(() => {
     if (desktop) return `translateX(${open ? 0 : 100}%)`;
     const rest = !open ? sheetHeight + 24 : expanded ? 0 : sheetHeight - peekHeight;
@@ -341,9 +499,13 @@
   }
 
   let scroller: HTMLDivElement | undefined = $state();
+  // A newly shown view starts at the top, or where it was left when going back.
   $effect(() => {
-    void history;
-    scroller?.scrollTo(0, 0);
+    void shown;
+    scroller?.scrollTo(
+      0,
+      untrack(() => restoreScroll)
+    );
   });
 </script>
 
@@ -379,87 +541,68 @@
     </button>
   {/if}
 
-  <div bind:this={scroller} class="scroller" class:scrolls={!compact}>
-    <div bind:clientHeight={contentHeight} class="content">
-      {#if backLabel !== null}
-        <button type="button" class="back" onclick={back}>‹ {backLabel}</button>
-      {/if}
+  <div class="progress" class:active={loading} aria-hidden="true"></div>
 
+  <div bind:this={scroller} class="scroller" aria-busy={loading}>
+    <div bind:clientHeight={contentHeight} class="content">
       {#if status === 'no-dictionaries'}
-        <p class="text-[13px] text-[#9a9a9a]">
+        <p class="text-[13px] text-gray-400">
           No dictionaries enabled. Add them in Settings &gt; Yomitan.
         </p>
       {:else if status === 'error'}
-        <p class="text-[13px] text-[#9a9a9a]">Lookup failed.</p>
-      {:else if session}
-        {@const { client, box, tokens, glossaryStyle, noteStates, minedPanels, loadKanji } =
-          session}
-        {#if view.kind === 'kanji'}
-          {#key view.character}
-            <KanjiView
-              {client}
-              character={view.character}
-              loadInfo={loadKanji}
-              onKanji={openKanji}
-              onWord={openTerm}
-            />
-          {/key}
-        {:else if view.kind === 'box'}
+        <p class="text-[13px] text-gray-400">Lookup failed.</p>
+      {:else if shown && view}
+        {@const { session: current, data } = shown}
+        {@const { client, tokens, glossaryStyle, noteStates, minedPanels } = current}
+        {#if backLabel !== null}
+          <button type="button" class="back" onclick={back}>‹ {backLabel}</button>
+        {/if}
+        {#if view.kind === 'box'}
           <SentenceStrip
             words={tokens.map(({ text, entries }) => ({ text, matched: entries.length > 0 }))}
-            selected={view.wordIndex}
-            onSelect={(index) => (history = selectWord(index))}
+            selected={stripSelected}
+            onSelect={selectBoxWord}
             onSelectText={openTerm}
           />
-          {@const token = view.wordIndex === null ? undefined : tokens[view.wordIndex]}
-          {#if token}
-            {#await wordEntries(session, token.text, token.entries) then entries}
+        {/if}
+        <!-- Keyed by the shown view so each one fades in whole, never section by section. -->
+        {#key data}
+          <div class="view" class:fade={shown.fade}>
+            {#if data.kind === 'kanji'}
+              <KanjiView {data} onKanji={openKanji} onWord={openTerm} />
+            {:else if data.entries.length > 0}
+              {@const query =
+                view.kind === 'term'
+                  ? view.query
+                  : view.kind === 'box' && view.wordIndex !== null
+                    ? (tokens[view.wordIndex]?.text ?? '')
+                    : ''}
               <WordView
                 {client}
-                {entries}
-                surface={token.text}
+                entries={data.entries}
+                glossaries={data.glossaries}
+                surface={query}
                 {compact}
                 {glossaryStyle}
-                {controller}
-                noteContext={noteContextFor(client, box, token.text, token.range.start)}
+                controller={controllerFor(current)}
+                noteContext={noteContextFor(
+                  current,
+                  query,
+                  view.kind === 'box' ? (view.wordIndex ?? undefined) : undefined
+                )}
                 {extraMarkers}
                 {noteStates}
-                panelSource={session.request.panel}
-                {minedPanels}
-                onAdjust={(entry) => startAdjust(minedPanels, entry)}
-                onKanji={openKanji}
-                onQuery={openTerm}
-              />
-            {/await}
-          {:else}
-            <p class="mt-2 text-[13px] text-[#666]">No match</p>
-          {/if}
-        {:else}
-          {#await wordEntries(session, view.query) then entries}
-            {#if entries.length > 0}
-              <WordView
-                {client}
-                {entries}
-                surface={view.query}
-                {compact}
-                {glossaryStyle}
-                {controller}
-                noteContext={noteContextFor(client, box, view.query, box.text.indexOf(view.query))}
-                {extraMarkers}
-                {noteStates}
-                panelSource={session.request.panel}
+                panelSource={current.request.panel}
                 {minedPanels}
                 onAdjust={(entry) => startAdjust(minedPanels, entry)}
                 onKanji={openKanji}
                 onQuery={openTerm}
               />
             {:else}
-              <p class="mt-2 text-[13px] text-[#666]">No match</p>
+              <p class="mt-2 text-[13px] text-gray-500">No match</p>
             {/if}
-          {:catch}
-            <p class="text-[13px] text-[#9a9a9a]">Lookup failed.</p>
-          {/await}
-        {/if}
+          </div>
+        {/key}
       {/if}
     </div>
   </div>
@@ -482,8 +625,9 @@
     z-index: 60;
     display: flex;
     flex-direction: column;
-    background: #000;
-    color: #fff;
+    /* The theme's surface, as the app's other drawers and menus. */
+    background: var(--color-gray-800, #1f2937);
+    color: var(--color-white, #fff);
     font-size: 14px;
     transition:
       transform 180ms ease-out,
@@ -493,7 +637,7 @@
     right: 0;
     bottom: 0;
     left: 0;
-    border-top: 1px solid #222;
+    border-top: 1px solid var(--color-gray-700, #374151);
     border-radius: 12px 12px 0 0;
     box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.5);
   }
@@ -515,7 +659,7 @@
     width: 420px;
     height: 100dvh;
     border-top: none;
-    border-left: 1px solid #222;
+    border-left: 1px solid var(--color-gray-700, #374151);
     border-radius: 0;
     box-shadow: -2px 0 12px rgba(0, 0, 0, 0.5);
   }
@@ -545,7 +689,7 @@
     width: 36px;
     transform: translateX(-50%);
     border-radius: 2px;
-    background: #444;
+    background: var(--color-gray-600, #4b5563);
   }
 
   .close {
@@ -557,25 +701,77 @@
     width: 36px;
     font-size: 24px;
     line-height: 1;
-    color: #9a9a9a;
+    color: var(--color-gray-400, #9ca3af);
   }
 
   .close:hover {
-    color: #fff;
+    color: var(--color-white, #fff);
+  }
+
+  /* Shows only when a view takes a moment to load: a quick one swaps without it. */
+  .progress {
+    position: relative;
+    z-index: 10;
+    flex: none;
+    height: 2px;
+    margin-top: -2px;
+    overflow: hidden;
+    opacity: 0;
+  }
+
+  .progress.active {
+    animation: progress-in 0s linear 150ms forwards;
+  }
+
+  .progress.active::after {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 30%;
+    background: var(--color-primary-500, #fe795d);
+    animation: progress-slide 1s ease-in-out infinite;
+  }
+
+  @keyframes progress-in {
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes progress-slide {
+    from {
+      transform: translateX(-100%);
+    }
+    to {
+      transform: translateX(340%);
+    }
+  }
+
+  .view.fade {
+    animation: view-in 120ms ease-out;
+  }
+
+  @keyframes view-in {
+    from {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .view,
+    .progress.active::after {
+      animation: none;
+    }
   }
 
   .scroller {
     min-height: 0;
     flex: 1;
-    overflow: hidden;
+    overflow-y: auto;
     overscroll-behavior: contain;
     touch-action: pan-y;
     user-select: text;
     -webkit-user-select: text;
-  }
-
-  .scroller.scrolls {
-    overflow-y: auto;
   }
 
   .content {
@@ -590,7 +786,7 @@
     margin-bottom: 8px;
     min-height: 32px;
     font-size: 13px;
-    color: #9a9a9a;
+    color: var(--color-gray-400, #9ca3af);
   }
 
   .sheet :global([lang='ja']) {
@@ -598,6 +794,6 @@
   }
 
   button:focus-visible {
-    outline: 1px solid #f5c542;
+    outline: 1px solid var(--color-primary-500, #fe795d);
   }
 </style>

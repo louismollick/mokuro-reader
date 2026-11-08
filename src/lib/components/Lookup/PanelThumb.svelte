@@ -29,12 +29,12 @@
 
   img {
     height: 48px;
-    border: 1px solid #4ade80;
+    border: 1px solid var(--color-green-600, #16a34a);
     object-fit: contain;
   }
 
   span {
     font-size: 11px;
-    color: #9a9a9a;
+    color: var(--color-gray-400, #9ca3af);
   }
 </style>
